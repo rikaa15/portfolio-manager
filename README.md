@@ -10,9 +10,6 @@ This application helps you:
 - Hedge impermanent loss using Hyperliquid perpetual futures
 - Automate position management and risk mitigation
 
-## Features
-TBD
-
 ## Tests
 ```
 npm run test app.service

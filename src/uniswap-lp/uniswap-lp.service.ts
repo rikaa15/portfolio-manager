@@ -12,10 +12,6 @@ import {
 import { Config } from '../config/configuration';
 import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
 
-// Token addresses on Ethereum mainnet
-const WBTC_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
-const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
-const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
 const NONFUNGIBLE_POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 
 @Injectable()
