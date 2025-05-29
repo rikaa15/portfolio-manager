@@ -5,9 +5,9 @@ export interface LiquidityPosition {
   tokenId: string;
   token0: Token;
   token1: Token;
-  fee: number;
-  tickLower: number;
-  tickUpper: number;
+  fee: bigint;
+  tickLower: bigint;
+  tickUpper: bigint;
   liquidity: BigNumberish;
   token0Balance: BigNumberish;
   token1Balance: BigNumberish;

@@ -20,7 +20,7 @@ async function bootstrap() {
   
   try {
     await Promise.all([
-      hyperliquidService.bootstrap(),
+      // hyperliquidService.bootstrap(),
       uniswapLpService.bootstrap(),
     ]);
     

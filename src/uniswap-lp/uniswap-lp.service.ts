@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ethers, JsonRpcProvider, Wallet } from 'ethers';
+import { ethers, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
 import { Pool } from '@uniswap/v3-sdk';
 import { Token } from '@uniswap/sdk-core';
 import {
@@ -10,12 +10,20 @@ import {
   CollectFeesParams,
 } from './types';
 import { Config } from '../config/configuration';
+import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
+
+// Token addresses on Ethereum mainnet
+const WBTC_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
+const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
+const NONFUNGIBLE_POSITION_MANAGER_ADDRESS = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 
 @Injectable()
 export class UniswapLpService {
   private readonly logger = new Logger(UniswapLpService.name);
   private readonly provider: JsonRpcProvider;
   private readonly signer: Wallet;
+  private readonly nfpmContract: ethers.Contract & any;
 
   constructor(private readonly configService: ConfigService<Config>) {
     const rpcUrl = this.configService.get('ethereum.rpcUrl', { infer: true });
@@ -23,6 +31,13 @@ export class UniswapLpService {
     
     this.provider = new JsonRpcProvider(rpcUrl);
     this.signer = new Wallet(privateKey, this.provider);
+    
+    // Initialize NFT Position Manager contract
+    this.nfpmContract = new ethers.Contract(
+      NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+      NonfungiblePositionManagerABI,
+      this.provider
+    );
   }
 
   async bootstrap(): Promise<void> {
@@ -39,6 +54,9 @@ export class UniswapLpService {
       this.logger.log(`Signer address: ${address}`);
       this.logger.log(`Signer balance: ${ethers.formatEther(balance)} ETH`);
 
+      // Get WBTC/USDC position info
+      await this.getWbtcUsdcPosition();
+
       this.logger.log('UniswapLpService initialized successfully');
     } catch (error) {
       this.logger.error(`Failed to initialize UniswapLpService: ${error.message}`);
@@ -46,47 +64,51 @@ export class UniswapLpService {
     }
   }
 
-  async getPosition(poolAddress: string, tokenId: string): Promise<LiquidityPosition> {
+  async getPositionsByOwner(ownerAddress: string): Promise<string[]> {
     try {
-      // Implementation will use Uniswap V3 NFT Position Manager contract
-      // to fetch position details
-      const positionManagerContract = new ethers.Contract(
-        poolAddress,
-        ['function positions(uint256) view returns (tuple(uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1))'],
-        this.provider
-      );
+      // Get number of positions
+      const numPositions = await this.nfpmContract.balanceOf(ownerAddress);
+      
+      // Fetch all position IDs
+      const calls = [];
+      for (let i = 0; i < numPositions; i++) {
+        calls.push(this.nfpmContract.tokenOfOwnerByIndex(ownerAddress, i));
+      }
+      
+      const positionIds = await Promise.all(calls);
+      return positionIds.map(id => id.toString());
+    } catch (error) {
+      this.logger.error(`Failed to get positions for owner ${ownerAddress}: ${error.message}`);
+      throw error;
+    }
+  }
 
-      const position = await positionManagerContract.positions(tokenId);
-
-      // Convert the position data to our interface format
+  async getPosition(tokenId: string): Promise<LiquidityPosition> {
+    try {
+      const position = await this.nfpmContract.positions(tokenId);
+      
       return {
         tokenId,
-        token0: new Token(1, position.token0, 18), // Assuming ETH mainnet (chainId: 1) and 18 decimals
+        token0: new Token(1, position.token0, 18), // Mainnet chainId = 1
         token1: new Token(1, position.token1, 18),
         fee: position.fee,
         tickLower: position.tickLower,
         tickUpper: position.tickUpper,
-        liquidity: position.liquidity,
-        token0Balance: position.tokensOwed0,
-        token1Balance: position.tokensOwed1,
-        feeGrowthInside0LastX128: position.feeGrowthInside0LastX128,
-        feeGrowthInside1LastX128: position.feeGrowthInside1LastX128,
+        liquidity: position.liquidity.toString(),
+        token0Balance: position.tokensOwed0.toString(),
+        token1Balance: position.tokensOwed1.toString(),
+        feeGrowthInside0LastX128: position.feeGrowthInside0LastX128.toString(),
+        feeGrowthInside1LastX128: position.feeGrowthInside1LastX128.toString(),
       };
     } catch (error) {
-      this.logger.error(`Failed to get position: ${error.message}`);
+      this.logger.error(`Failed to get position ${tokenId}: ${error.message}`);
       throw error;
     }
   }
 
   async addLiquidity(params: AddLiquidityParams): Promise<string> {
     try {
-      const positionManagerContract = new ethers.Contract(
-        this.configService.get('ethereum.contracts.uniswapPositionManager', { infer: true }),
-        ['function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external returns (uint256 tokenId)'],
-        this.signer
-      );
-
-      const tx = await positionManagerContract.mint({
+      const tx = await this.nfpmContract.connect(this.signer).mint({
         token0: params.token0.address,
         token1: params.token1.address,
         fee: params.fee,
@@ -101,7 +123,6 @@ export class UniswapLpService {
       });
 
       const receipt = await tx.wait();
-      // Extract tokenId from event logs
       const event = receipt.events.find(e => e.event === 'IncreaseLiquidity');
       return event.args.tokenId.toString();
     } catch (error) {
@@ -112,13 +133,7 @@ export class UniswapLpService {
 
   async removeLiquidity(params: RemoveLiquidityParams): Promise<void> {
     try {
-      const positionManagerContract = new ethers.Contract(
-        this.configService.get('ethereum.contracts.uniswapPositionManager', { infer: true }),
-        ['function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external returns (uint256 amount0, uint256 amount1)'],
-        this.signer
-      );
-
-      const tx = await positionManagerContract.decreaseLiquidity({
+      const tx = await this.nfpmContract.connect(this.signer).decreaseLiquidity({
         tokenId: params.tokenId,
         liquidity: params.liquidity,
         amount0Min: params.amount0Min,
@@ -135,13 +150,7 @@ export class UniswapLpService {
 
   async collectFees(params: CollectFeesParams): Promise<void> {
     try {
-      const positionManagerContract = new ethers.Contract(
-        this.configService.get('ethereum.contracts.uniswapPositionManager', { infer: true }),
-        ['function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external returns (uint256 amount0, uint256 amount1)'],
-        this.signer
-      );
-
-      const tx = await positionManagerContract.collect({
+      const tx = await this.nfpmContract.connect(this.signer).collect({
         tokenId: params.tokenId,
         recipient: params.recipient,
         amount0Max: params.amount0Max,
@@ -151,6 +160,48 @@ export class UniswapLpService {
       await tx.wait();
     } catch (error) {
       this.logger.error(`Failed to collect fees: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getWbtcUsdcPosition(tokenId: string = '999399'): Promise<void> {
+    try {
+      this.logger.log(`Fetching WBTC/USDC position #${tokenId}...`);
+      
+      const position = await this.getPosition(tokenId);
+      console.log('position', position)
+      
+      // Format amounts with proper decimals
+      const wbtcAmount = formatUnits(position.token0Balance, 8); // WBTC has 8 decimals
+      const usdcAmount = formatUnits(position.token1Balance, 6); // USDC has 6 decimals
+
+      // Calculate tick ranges to price
+      const tickToPrice = (tick: bigint): number => {
+        // Convert tick to number for the calculation since we can't use ** with bigint
+        const tickNumber = Number(tick);
+        return 1.0001 ** tickNumber;
+      };
+
+      const lowerPrice = tickToPrice(position.tickLower);
+      const upperPrice = tickToPrice(position.tickUpper);
+
+      this.logger.log('Position Details:');
+      this.logger.log(`Token ID: ${position.tokenId}`);
+      this.logger.log(`Fee Tier: ${Number(position.fee) / 10000}%`);
+      this.logger.log(`Price Range: $${lowerPrice.toFixed(2)} - $${upperPrice.toFixed(2)}`);
+      this.logger.log(`WBTC Amount: ${wbtcAmount}`);
+      this.logger.log(`USDC Amount: ${usdcAmount}`);
+      this.logger.log(`Liquidity: ${position.liquidity}`);
+      
+      // Log uncollected fees
+      const wbtcFees = formatUnits(position.feeGrowthInside0LastX128, 8);
+      const usdcFees = formatUnits(position.feeGrowthInside1LastX128, 6);
+      this.logger.log(`Uncollected Fees:`);
+      this.logger.log(`- WBTC: ${wbtcFees}`);
+      this.logger.log(`- USDC: ${usdcFees}`);
+
+    } catch (error) {
+      this.logger.error(`Failed to fetch WBTC/USDC position: ${error.message}`);
       throw error;
     }
   }

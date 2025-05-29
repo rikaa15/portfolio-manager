@@ -14,9 +14,7 @@ export class HyperliquidService {
         const client = new hl.PublicClient({ transport });
 
         const walletAddress = this.configService.get<Hex>('WALLET_ADDRESS');
-        console.log(walletAddress);
-
         const userState = await client.clearinghouseState({ user: walletAddress })
-        this.logger.log('HyperliquidService boostrap completed', userState.assetPositions);
+        this.logger.log('HyperliquidService boostrap completed');
     }
 }
