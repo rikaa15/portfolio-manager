@@ -120,17 +120,9 @@ async function executeQuery(
 
     return data.data;
   } catch (error: any) {
-    logger.error('=== REQUEST FAILED ===');
     if (error.response) {
       logger.error(
-        `Status: ${error.response.status} ${error.response.statusText}`,
-      );
-      logger.error(`URL: ${error.response.config?.url || 'undefined'}`);
-      logger.error(
-        `Base URL: ${error.response.config?.baseURL || 'undefined'}`,
-      );
-      logger.error(
-        `Full URL: ${(error.response.config?.baseURL || '') + (error.response.config?.url || '')}`,
+        `Query failed: ${error.response.status} ${error.response.statusText}`,
       );
       if (error.response.data) {
         logger.error(`Response: ${JSON.stringify(error.response.data)}`);
@@ -285,7 +277,7 @@ async function runBacktest(
       const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
       cumulativeFees += dailyFees;
 
-      // Calculate current position value (simplified)
+      // Calculate current position value
       const currentTVL = parseFloat(dayData.tvlUSD);
       const currentPositionValue = currentTVL * lpSharePercentage;
 
@@ -299,17 +291,21 @@ async function runBacktest(
         initialToken1Price,
       );
 
+      // Calculate total PnL
+      const positionPnL = currentPositionValue - initialAmount;
+      const totalPnL = positionPnL + cumulativeFees;
+
       // Calculate running APR based on fees only
       const daysElapsed = dayNumber;
       const runningAPR =
         (cumulativeFees / initialAmount) * (365 / daysElapsed) * 100;
 
-      // Console output for each day
+      // Clean output: Position Value, IL, PnL, APR
       logger.log(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
           `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-          `Fees: $${cumulativeFees.toFixed(0)} | ` +
+          `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
           `APR: ${runningAPR.toFixed(1)}%`,
       );
     });
