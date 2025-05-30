@@ -1,8 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HyperliquidService } from './hyperliquid.service';
-import { ConfigService } from '@nestjs/config';
-import fetch from 'node-fetch';
-import { Headers, Request, Response } from 'node-fetch';
+import { ConfigModule } from '@nestjs/config';
+import fetch, { Headers, Request, Response } from 'node-fetch';
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 
 globalThis.fetch = fetch as any;
 globalThis.Headers = Headers as any;
@@ -14,14 +16,11 @@ describe('HyperliquidService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [HyperliquidService, ConfigService],
+      imports: [ConfigModule.forRoot()],
+      providers: [HyperliquidService],
     }).compile();
 
     service = module.get<HyperliquidService>(HyperliquidService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
   });
 
   it('runs backtest for BTC over 1 year', async () => {
@@ -59,4 +58,25 @@ describe('HyperliquidService', () => {
       expect(typeof r.pnl).toBe('number');
     }
   }, 30_000);
+
+  // WARNING: This test will execute real trade
+  it('opens and closes a BTC position', async () => {
+    const open = await service.openPosition({
+      coin: 'BTC',
+      isLong: true,
+      leverage: 2,
+      collateral: 1,
+    });
+
+    console.log('Open response:', open);
+
+    await new Promise(res => setTimeout(res, 3000));
+
+    const close = await service.closePosition('BTC');
+
+    console.log('Close response:', close);
+
+    expect(open.status).toBe('ok');
+    expect(close.status).toBe('ok');
+  }, 15_000);
 });
