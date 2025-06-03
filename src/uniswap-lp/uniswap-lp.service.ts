@@ -470,4 +470,8 @@ export class UniswapLpService {
       throw error;
     }
   }
+
+  async getSignerAddress(): Promise<string> {
+    return this.signer.getAddress();
+  }
 }

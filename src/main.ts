@@ -15,6 +15,7 @@ async function bootstrap() {
   // Initialize services
   const hyperliquidService = app.get(HyperliquidService);
   const uniswapLpService = app.get(UniswapLpService);
+  const appService = app.get(AppService);
 
   logger.log('Initializing services...');
   
@@ -22,6 +23,7 @@ async function bootstrap() {
     await Promise.all([
       // hyperliquidService.bootstrap(),
       uniswapLpService.bootstrap(),
+      appService.bootstrap(),
     ]);
     
     const port = process.env.PORT || 3000;

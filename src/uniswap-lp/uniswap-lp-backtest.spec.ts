@@ -114,7 +114,7 @@ async function executeQuery(
 
     const { data } = await client.post('', requestData);
 
-    if (data.errors) {
+    if (data.errors && data.errors.length > 0) {
       throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
     }
 
