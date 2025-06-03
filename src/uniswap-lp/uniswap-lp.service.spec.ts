@@ -5,6 +5,8 @@ import { UniswapLpService } from './uniswap-lp.service';
 import { ethers } from 'ethers';
 import { Token } from '@uniswap/sdk-core';
 
+const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
+
 const TOKEN0_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'; // WBTC
 const TOKEN0_DECIMALS = 8;
 const TOKEN0_SYMBOL = 'WBTC';
@@ -101,7 +103,7 @@ describe('UniswapLpService Integration Tests', () => {
       }
     },
     TIMEOUTS.BATCH,
-  ); // 2 minutes for approvals
+  );
 
   it(
     'should create liquidity position successfully',
@@ -175,33 +177,57 @@ describe('UniswapLpService Integration Tests', () => {
   );
 
   it(
-    'should read the created position details',
+    'should get earned fees for LP position',
     async () => {
-      // Skip if no environment variables or no position created
+      // Skip if no environment variables
       if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
         console.log('Skipping test - missing environment variables');
         return;
       }
 
-      if (!createdTokenId || createdTokenId === 'FAILED') {
-        console.log('Skipping test - no position was created in previous test');
+      if (!createdTokenId) {
+        console.log(
+          'Skipping test - no createdTokenId available (run addLiquidity test first)',
+        );
         return;
       }
 
-      console.log(
-        'Step 2: Reading position details for Token ID:',
-        createdTokenId,
-      );
-      const position = await service.getPosition(createdTokenId);
+      console.log(`Getting earned fees for LP position ${createdTokenId}...`);
 
-      expect(position).toBeDefined();
-      expect(position.tokenId).toBe(createdTokenId);
-      expect(position.token0).toBeDefined();
-      expect(position.token1).toBeDefined();
-      expect(position.liquidity).toBeDefined();
+      try {
+        const earnedFees = await service.getEarnedFees(+createdTokenId);
 
-      console.log('Step 2 Complete - Position details retrieved');
-      console.log(`  Liquidity: ${position.liquidity}`);
+        expect(earnedFees).toBeDefined();
+        expect(earnedFees.token0Fees).toBeDefined();
+        expect(earnedFees.token1Fees).toBeDefined();
+        expect(typeof earnedFees.token0Fees).toBe('string');
+        expect(typeof earnedFees.token1Fees).toBe('string');
+
+        const wbtcAmount = parseFloat(earnedFees.token0Fees);
+        const usdcAmount = parseFloat(earnedFees.token1Fees);
+
+        expect(wbtcAmount).toBeGreaterThanOrEqual(0);
+        expect(usdcAmount).toBeGreaterThanOrEqual(0);
+
+        console.log(`Token ID: ${createdTokenId}`);
+        console.log(`WBTC Fees: ${earnedFees.token0Fees}`);
+        console.log(`USDC Fees: ${earnedFees.token1Fees}`);
+
+        if (wbtcAmount === 0 && usdcAmount === 0) {
+          console.log(
+            'Step 2: No fees yet (expected for newly created position)',
+          );
+        } else {
+          console.log(
+            `Step 2: Position has earned fees! WBTC: ${wbtcAmount}, USDC: ${usdcAmount}`,
+          );
+          expect(wbtcAmount).toBeLessThan(10); // Less than 10 WBTC in fees
+          expect(usdcAmount).toBeLessThan(1000000); // Less than $1M in fees
+        }
+      } catch (error) {
+        console.error('Step 2: Error getting earned fees:', error.message);
+        throw error;
+      }
     },
     TIMEOUTS.READ,
   );
@@ -346,6 +372,38 @@ describe('UniswapLpService Integration Tests', () => {
       console.log(
         `Complete cycle: Add → Remove → Collect ALL ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL} tokens!`,
       );
+    },
+    TIMEOUTS.READ,
+  );
+
+  it(
+    'should get pool price',
+    async () => {
+      // Skip if no environment variables
+      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
+        console.log('Skipping test - missing environment variables');
+        return;
+      }
+
+      console.log('Getting pool price...');
+
+      try {
+        const poolPrice = await service.getPoolPrice(WBTC_USDC_POOL_ADDRESS);
+
+        expect(poolPrice).toBeDefined();
+        expect(poolPrice.token0Symbol).toBeDefined();
+        expect(poolPrice.token1Symbol).toBeDefined();
+        expect(poolPrice.token0ToToken1Rate).toBeGreaterThan(0);
+        expect(poolPrice.token1ToToken0Rate).toBeGreaterThan(0);
+
+        console.log(`Pool Price: ${poolPrice.formattedPrice}`);
+        console.log(
+          `Tokens: ${poolPrice.token0Symbol}/${poolPrice.token1Symbol}`,
+        );
+      } catch (error) {
+        console.error('Pool price test failed:', error.message);
+        throw error;
+      }
     },
     TIMEOUTS.READ,
   );

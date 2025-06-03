@@ -10,11 +10,15 @@ import {
 } from './types';
 import { Config } from '../config/configuration';
 import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
+import { getPoolPrice, getPoolPriceHistory } from './uniswap-lp.utils';
+import { fetchPoolInfo } from './subgraph.client';
 
 // Token addresses on Ethereum mainnet
 // const WBTC_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
 // const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
-// const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
+
+const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
+
 const NONFUNGIBLE_POSITION_MANAGER_ADDRESS =
   '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 
@@ -172,6 +176,7 @@ export class UniswapLpService {
 
   async addLiquidity(params: AddLiquidityParams): Promise<string> {
     try {
+      // return '999399';
       this.logger.log('Approving tokens for liquidity addition...');
 
       await Promise.all([
@@ -264,6 +269,110 @@ export class UniswapLpService {
     }
   }
 
+  async getEarnedFees(
+    tokenId: number,
+    poolAddress = WBTC_USDC_POOL_ADDRESS,
+  ): Promise<{
+    token0Fees: string;
+    token1Fees: string;
+    token0Symbol: string;
+    token1Symbol: string;
+  }> {
+    try {
+      const poolInfo = await fetchPoolInfo(poolAddress);
+
+      const contract = new ethers.Contract(
+        NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+        NonfungiblePositionManagerABI,
+        this.provider,
+      );
+
+      const MaxUint128 = '340282366920938463463374607431768211455';
+
+      const collectParams = {
+        tokenId: tokenId,
+        recipient: ethers.ZeroAddress,
+        amount0Max: MaxUint128,
+        amount1Max: MaxUint128,
+      };
+
+      const result = await contract.collect.staticCall(collectParams);
+
+      const token0Decimals = parseInt(poolInfo.token0.decimals);
+      const token1Decimals = parseInt(poolInfo.token1.decimals);
+
+      const token0Fees = ethers.formatUnits(result.amount0, token0Decimals);
+      const token1Fees = ethers.formatUnits(result.amount1, token1Decimals);
+
+      this.logger.log(
+        `Uncollected fees - ${poolInfo.token0.symbol}: ${token0Fees}, ${poolInfo.token1.symbol}: ${token1Fees}`,
+      );
+
+      return {
+        token0Fees,
+        token1Fees,
+        token0Symbol: poolInfo.token0.symbol,
+        token1Symbol: poolInfo.token1.symbol,
+      };
+    } catch (error) {
+      this.logger.error('Error getting earned fees:', error.message);
+      throw error;
+    }
+  }
+
+  async getPoolPrice(poolAddress: string): Promise<{
+    token0ToToken1Rate: number;
+    token1ToToken0Rate: number;
+    token0Symbol: string;
+    token1Symbol: string;
+    formattedPrice: string;
+  }> {
+    try {
+      this.logger.log(`Getting pool price for ${poolAddress}`);
+      return await getPoolPrice(poolAddress);
+    } catch (error) {
+      this.logger.error(
+        `Error getting pool price for ${poolAddress}:`,
+        error.message,
+      );
+      throw error;
+    }
+  }
+
+  async getPoolPriceHistory(
+    poolAddress: string,
+    startDate: string,
+    endDate: string,
+    interval: 'daily' | 'hourly' = 'daily',
+  ): Promise<
+    Array<{
+      timestamp: number;
+      date: string;
+      token0Price: number;
+      token1Price: number;
+      tvlUSD: number;
+      volumeUSD: number;
+    }>
+  > {
+    try {
+      this.logger.log(
+        `Getting pool price history for ${poolAddress} from ${startDate} to ${endDate} (${interval})`,
+      );
+      return await getPoolPriceHistory(
+        poolAddress,
+        startDate,
+        endDate,
+        interval,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error getting pool price history for ${poolAddress}:`,
+        error.message,
+      );
+      throw error;
+    }
+  }
+
   async setupTokenApprovals(tokens: string[]): Promise<void> {
     this.logger.log(
       'Setting up bulk token approvals for better performance...',
@@ -281,7 +390,6 @@ export class UniswapLpService {
           this.signer,
         );
 
-        // Get token info in parallel
         const [decimals, currentAllowance] = await Promise.all([
           tokenContract.decimals(),
           tokenContract.allowance(
@@ -316,7 +424,6 @@ export class UniswapLpService {
       }
     });
 
-    // Wait for all approvals to complete in parallel
     await Promise.all(approvalPromises);
     this.logger.log('Bulk approval setup complete');
   }
