@@ -108,23 +108,38 @@ export class HyperliquidService {
     const meta = await this.infoClient.meta();
     const assetIndex = meta.universe.findIndex((c) => c.name === coin);
     if (assetIndex === -1) throw new Error(`Asset ${coin} not found in universe`);
-  
-    return await this.exchangeClient.order({
+    
+    console.log('Asset metadata:', meta.universe[assetIndex]);
+    console.log('Original mark price:', markPrice);
+    console.log('Size:', size.toFixed(4));
+    
+ 
+    const isBuy = isLong;
+
+    const aggressivePrice = isBuy 
+      ? Math.round(markPrice * 2).toString() + ".0"
+      : Math.round(markPrice * 0.5).toString() + ".0";
+    
+    const order = {
       orders: [
         {
           a: assetIndex,
-          b: isLong,
-          p: markPrice.toFixed(2),
+          b: isBuy,
+          p: aggressivePrice,
           s: size.toFixed(4),
           r: false,
-          t: { limit: { tif: "Ioc" } },
+          t: { limit: { tif: "Ioc" as const } },
         },
       ],
-      grouping: "na",
-    });
+      grouping: "na" as const,
+    };
+    
+    console.log('Full order object:', JSON.stringify(order, null, 2));
+  
+    return await this.exchangeClient.order(order);
   }
   
-  async closePosition(coin: string) {
+  async closePosition(coin: string, isLong: boolean) {
     const walletAddress = this.configService.get<Hex>('WALLET_ADDRESS');
     const userState = await this.infoClient.clearinghouseState({ user: walletAddress });
   
@@ -136,25 +151,42 @@ export class HyperliquidService {
     if (!position?.position || parseFloat(position.position.szi) === 0) return null;
   
     const szi = parseFloat(position.position.szi);
-    const isBuy = szi < 0;
     const size = Math.abs(szi);
-  
+    
+    const isBuy = !isLong;
+
     const mids = await this.infoClient.allMids();
     const markPrice = parseFloat(mids[coin]);
-  
-    return await this.exchangeClient.order({
+    
+    const closePrice = isBuy 
+      ? Math.round(markPrice * 2).toString() + ".0"
+      : Math.round(markPrice * 0.5).toString() + ".0";
+    
+    console.log('Asset metadata:', meta.universe[assetIndex]);
+    console.log('Size to close:', size.toFixed(4));
+    console.log('Position size:', szi);
+    console.log('Is long position:', isLong);
+    console.log('Is buy order:', isBuy);
+    console.log('Mark price:', markPrice);
+    console.log('Close price:', closePrice);
+    
+    const order = {
       orders: [
         {
           a: assetIndex,
           b: isBuy,
-          p: markPrice.toFixed(2),
+          p: closePrice,
           s: size.toFixed(4),
           r: true,
-          t: { limit: { tif: "Ioc" } },
+          t: { limit: { tif: "Ioc" as const } },
         },
       ],
-      grouping: "na",
-    });
+      grouping: "na" as const,
+    };
+    
+    console.log('Full order object:', JSON.stringify(order, null, 2));
+  
+    return await this.exchangeClient.order(order);
   }
   
 }

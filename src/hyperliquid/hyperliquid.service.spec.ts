@@ -61,18 +61,19 @@ describe('HyperliquidService', () => {
 
   // WARNING: This test will execute real trade
   it('opens and closes a BTC position', async () => {
+    const isLong = true;  // We're opening a long position
     const open = await service.openPosition({
       coin: 'BTC',
-      isLong: true,
+      isLong,
       leverage: 2,
-      collateral: 1,
+      collateral: 11,
     });
 
     console.log('Open response:', open);
 
     await new Promise(res => setTimeout(res, 3000));
 
-    const close = await service.closePosition('BTC');
+    const close = await service.closePosition('BTC', isLong);
 
     console.log('Close response:', close);
 
