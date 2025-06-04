@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as hl from '@nktkas/hyperliquid';
 import { Hex } from '@nktkas/hyperliquid';
-// import { Wallet } from 'ethers';
 import { privateKeyToAccount } from 'viem/accounts';
 
 @Injectable()
@@ -13,7 +12,7 @@ export class HyperliquidService {
   private readonly exchangeClient: hl.ExchangeClient;
 
   constructor(private configService: ConfigService) {
-    const privateKey = this.configService.get<string>('HL_KEY');
+    const privateKey = this.configService.get<string>('hyperliquid.privateKey');
     if (!privateKey) throw new Error('HL_KEY is not defined in environment variables.');
 
     const wallet = privateKeyToAccount(privateKey as Hex);
@@ -24,7 +23,7 @@ export class HyperliquidService {
   }
 
   async bootstrap() {
-    const walletAddress = this.configService.get<Hex>('WALLET_ADDRESS');
+    const walletAddress = this.configService.get<Hex>('walletAddress');
     await this.infoClient.clearinghouseState({ user: walletAddress });
     this.logger.log('HyperliquidService bootstrap completed');
   }
@@ -140,7 +139,7 @@ export class HyperliquidService {
   }
   
   async closePosition(coin: string, isLong: boolean) {
-    const walletAddress = this.configService.get<Hex>('WALLET_ADDRESS');
+    const walletAddress = this.configService.get<Hex>('walletAddress');
     const userState = await this.infoClient.clearinghouseState({ user: walletAddress });
   
     const meta = await this.infoClient.meta();
@@ -161,11 +160,9 @@ export class HyperliquidService {
     const closePrice = isBuy 
       ? Math.round(markPrice * 2).toString() + ".0"
       : Math.round(markPrice * 0.5).toString() + ".0";
-    
-    console.log('Asset metadata:', meta.universe[assetIndex]);
+
     console.log('Size to close:', size.toFixed(4));
     console.log('Position size:', szi);
-    console.log('Is long position:', isLong);
     console.log('Is buy order:', isBuy);
     console.log('Mark price:', markPrice);
     console.log('Close price:', closePrice);

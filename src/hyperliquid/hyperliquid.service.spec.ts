@@ -1,22 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HyperliquidService } from './hyperliquid.service';
 import { ConfigModule } from '@nestjs/config';
-import fetch, { Headers, Request, Response } from 'node-fetch';
-import * as dotenv from 'dotenv';
-dotenv.config();
-
-
-globalThis.fetch = fetch as any;
-globalThis.Headers = Headers as any;
-globalThis.Request = Request as any;
-globalThis.Response = Response as any;
+import configuration from '../config/configuration';
 
 describe('HyperliquidService', () => {
   let service: HyperliquidService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule.forRoot()],
+      imports: [
+        ConfigModule.forRoot({
+          load: [configuration],
+          isGlobal: true,
+        }),
+      ],
       providers: [HyperliquidService],
     }).compile();
 
@@ -61,7 +58,7 @@ describe('HyperliquidService', () => {
 
   // WARNING: This test will execute real trade
   it('opens and closes a BTC position', async () => {
-    const isLong = true;  // We're opening a long position
+    const isLong = true;
     const open = await service.openPosition({
       coin: 'BTC',
       isLong,
