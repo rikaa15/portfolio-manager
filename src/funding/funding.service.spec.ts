@@ -24,23 +24,27 @@ describe('FundingService', () => {
     expect(service).toBeDefined();
   });
 
-  it('should get current BTC funding rate', async () => {
-    const fundingRate = await service.getCurrentFundingRate('BTC');
+  it('should get current funding rates for BTC, ETH, and S', async () => {
+    const coins = ['BTC', 'ETH', 'S'];
     
-    expect(fundingRate).toBeDefined();
-    expect(typeof fundingRate.fundingRate).toBe('number');
-    expect(typeof fundingRate.markPrice).toBe('number');
-    expect(typeof fundingRate.premium).toBe('number');
-    expect(typeof fundingRate.oraclePrice).toBe('number');
-    expect(typeof fundingRate.openInterest).toBe('number');
-    
-    console.log('Current BTC funding rate:', {
-      fundingRate: `${(fundingRate.fundingRate * 100).toFixed(4)}% per 8 hours`,
-      hourlyRate: `${(fundingRate.fundingRate / 8 * 100).toFixed(4)}% per hour`,
-      markPrice: `$${fundingRate.markPrice.toLocaleString()}`,
-      premium: `${(fundingRate.premium * 100).toFixed(4)}%`,
-      openInterest: `${fundingRate.openInterest.toLocaleString()} BTC`
-    });
+    for (const coin of coins) {
+      const fundingRate = await service.getCurrentFundingRate(coin);
+      
+      expect(fundingRate).toBeDefined();
+      expect(typeof fundingRate.fundingRate).toBe('number');
+      expect(typeof fundingRate.markPrice).toBe('number');
+      expect(typeof fundingRate.premium).toBe('number');
+      expect(typeof fundingRate.oraclePrice).toBe('number');
+      expect(typeof fundingRate.openInterest).toBe('number');
+      
+      console.log(`Current ${coin} funding rate:`, {
+        fundingRate: `${(fundingRate.fundingRate * 100).toFixed(4)}% per 8 hours`,
+        hourlyRate: `${(fundingRate.fundingRate / 8 * 100).toFixed(4)}% per hour`,
+        markPrice: `$${fundingRate.markPrice.toLocaleString()}`,
+        premium: `${(fundingRate.premium * 100).toFixed(4)}%`,
+        openInterest: `${fundingRate.openInterest.toLocaleString()} ${coin}`
+      });
+    }
   }, 15_000);
 
   it('should get historical funding rates for BTC', async () => {
@@ -62,7 +66,7 @@ describe('FundingService', () => {
       expect(entry.time).toBeLessThanOrEqual(now);
     });
     
-    console.log('Histroical BTC funding rates for:', {
+    console.log('Historical BTC funding rates for:', {
       start: new Date(sevenDaysAgo).toISOString(),
       end: new Date(now).toISOString()
     });
