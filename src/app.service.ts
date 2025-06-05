@@ -85,7 +85,7 @@ export class AppService {
           this.logger.warn('Position out of range for more than 24 hours, exiting position...');
           await this.exitPosition();
           return;
-        }
+  }
       } else {
         this.outOfRangeStartTime = null;
       }
