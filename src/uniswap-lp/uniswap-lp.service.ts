@@ -2,54 +2,194 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ethers, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
 import { Token } from '@uniswap/sdk-core';
+import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
 import {
   LiquidityPosition,
   AddLiquidityParams,
   RemoveLiquidityParams,
   CollectFeesParams,
 } from './types';
-import { Config } from '../config/configuration';
-import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
-import { getPoolPrice, getPoolPriceHistory } from './uniswap-lp.utils';
-import { fetchPoolInfo } from './subgraph.client';
-
-// Token addresses on Ethereum mainnet
-// const WBTC_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
-// const USDC_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
-
-const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
-
-const NONFUNGIBLE_POSITION_MANAGER_ADDRESS =
-  '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
-
-const ERC20_ABI = [
-  'function approve(address spender, uint256 amount) external returns (bool)',
-  'function allowance(address owner, address spender) external view returns (uint256)',
-  'function balanceOf(address account) external view returns (uint256)',
-];
+import configuration, { Config } from '../config/configuration';
+import { getPoolPriceHistory } from './uniswap-lp.utils';
+import { fetchCurrentPoolData, fetchPoolInfo } from './subgraph.client';
+import {
+  ERC20_ABI,
+  fetchPoolInfoDirect,
+  MAX_UINT_128,
+} from './contract.client';
+import {
+  UNISWAP_CONFIGS,
+  UniswapNetworkConfig,
+  UniswapNetworkName,
+} from './uniswap.config';
 
 @Injectable()
 export class UniswapLpService {
   private readonly logger = new Logger(UniswapLpService.name);
-  private readonly provider: JsonRpcProvider;
-  private readonly signer: Wallet;
-  private readonly nfpmContract: ethers.Contract & any;
+  private provider: JsonRpcProvider;
+  private signer: Wallet;
+  private nfpmContract: ethers.Contract & any;
+  private uniswapConfig: UniswapNetworkConfig;
+  private currentNetwork: UniswapNetworkName;
+  private uniswapPositionManagerAddress: string;
 
   constructor(private readonly configService: ConfigService<Config>) {
-    const rpcUrl = this.configService.get('ethereum.rpcUrl', { infer: true });
-    const privateKey = this.configService.get('ethereum.privateKey', {
-      infer: true,
-    });
+    this.initializeNetwork('ethereum');
+  }
 
+  private initializeNetwork(networkName: UniswapNetworkName): void {
+    this.uniswapConfig = UNISWAP_CONFIGS[networkName];
+    this.currentNetwork = networkName;
+
+    const config = configuration();
+    const networkConfig = config[networkName as keyof typeof config] as any;
+
+    // Validate that the config exists
+    if (!this.uniswapConfig) {
+      throw new Error(
+        `Uniswap configuration not found for network: ${networkName}`,
+      );
+    }
+
+    const rpcUrl = networkConfig.rpcUrl;
+
+    const privateKey = networkConfig.privateKey;
+
+    if (!privateKey) {
+      throw new Error(
+        `Uniswap private key not configured ${privateKey} dsfdsfs`,
+      );
+    }
+
+    this.uniswapPositionManagerAddress =
+      networkConfig.contracts.uniswapPositionManager;
+
+    // Initialize provider and signer
     this.provider = new JsonRpcProvider(rpcUrl);
     this.signer = new Wallet(privateKey, this.provider);
 
-    // Initialize NFT Position Manager contract
+    // Initialize Uniswap position manager contract
     this.nfpmContract = new ethers.Contract(
-      NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+      this.uniswapPositionManagerAddress,
       NonfungiblePositionManagerABI,
       this.provider,
     );
+
+    this.logger.log(
+      `Initialized Uniswap service on ${networkName} - Pool: ${this.uniswapConfig.poolAddress}`,
+    );
+    this.logger.log(
+      `Tokens: ${this.uniswapConfig.tokens.token0.symbol}/${this.uniswapConfig.tokens.token1.symbol}`,
+    );
+  }
+
+  setNetwork(networkName: UniswapNetworkName): void {
+    this.logger.log(`Switching Uniswap service to ${networkName}...`);
+    this.initializeNetwork(networkName);
+    this.logger.log(`Successfully switched to ${networkName}`);
+  }
+
+  getCurrentNetwork(): {
+    name: UniswapNetworkName;
+    config: UniswapNetworkConfig;
+  } {
+    return {
+      name: this.currentNetwork,
+      config: this.uniswapConfig,
+    };
+  }
+
+  async bootstrap(): Promise<void> {
+    try {
+      this.logger.log('Initializing UniswapLpService...');
+
+      // Test connection to provider
+      const network = await this.provider.getNetwork();
+      this.logger.log(
+        `Connected to network: ${network.name} (chainId: ${network.chainId})`,
+      );
+
+      if (Number(network.chainId) !== this.uniswapConfig.chainId) {
+        this.logger.warn(
+          `Network mismatch: RPC chainId ${network.chainId} != Uniswap config chainId ${this.uniswapConfig.chainId}`,
+        );
+      }
+
+      // Test signer
+      const address = await this.signer.getAddress();
+      const balance = await this.provider.getBalance(address);
+      this.logger.log(`Signer address: ${address}`);
+      this.logger.log(`Signer balance: ${ethers.formatEther(balance)} ETH`);
+
+      // Only call position check on mainnet
+      if (this.currentNetwork === 'ethereum') {
+        await this.getWbtcUsdcPosition();
+      } else {
+        this.logger.log(
+          `Skipping position check for ${this.currentNetwork} network`,
+        );
+      }
+
+      this.logger.log('UniswapLpService initialized successfully');
+    } catch (error) {
+      this.logger.error(
+        `Failed to initialize UniswapLpService: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  async getEarnedFees(
+    tokenId: number,
+    poolAddress?: string,
+  ): Promise<{
+    token0Fees: string;
+    token1Fees: string;
+    token0Symbol: string;
+    token1Symbol: string;
+  }> {
+    try {
+      const targetPoolAddress = poolAddress || this.uniswapConfig.poolAddress;
+
+      const poolInfo = this.uniswapConfig.hasSubgraph
+        ? await fetchPoolInfo(targetPoolAddress)
+        : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
+
+      const contract = new ethers.Contract(
+        this.uniswapPositionManagerAddress,
+        NonfungiblePositionManagerABI,
+        this.provider,
+      );
+
+      const collectParams = {
+        tokenId: tokenId,
+        recipient: ethers.ZeroAddress,
+        amount0Max: MAX_UINT_128,
+        amount1Max: MAX_UINT_128,
+      };
+
+      const result = await contract.collect.staticCall(collectParams);
+
+      const token0Decimals = parseInt(poolInfo.token0.decimals);
+      const token1Decimals = parseInt(poolInfo.token1.decimals);
+
+      const token0Fees = ethers.formatUnits(result.amount0, token0Decimals);
+      const token1Fees = ethers.formatUnits(result.amount1, token1Decimals);
+
+      this.logger.log(
+        `Uncollected fees - ${poolInfo.token0.symbol}: ${token0Fees}, ${poolInfo.token1.symbol}: ${token1Fees}`,
+      );
+
+      return {
+        token0Fees,
+        token1Fees,
+        token0Symbol: poolInfo.token0.symbol,
+        token1Symbol: poolInfo.token1.symbol,
+      };
+    } catch (error) {
+      this.logger.error('Error getting earned fees:', error.message);
+      throw error;
+    }
   }
 
   private async approveToken(
@@ -63,27 +203,18 @@ export class UniswapLpService {
         this.signer,
       );
 
-      // Check current allowance
       const currentAllowance = await tokenContract.allowance(
         await this.signer.getAddress(),
-        NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+        this.uniswapPositionManagerAddress,
       );
 
-      console.log(`DEBUG ${tokenAddress}:`);
-      console.log(`  Current allowance: ${currentAllowance.toString()}`);
-      console.log(`  Amount needed: ${amount.toString()}`);
-      console.log(
-        `  Comparison (allowance < amount): ${currentAllowance < amount}`,
-      );
-      console.log(`  Allowance >= Amount: ${currentAllowance >= amount}`);
-      // Only approve if current allowance is insufficient
       if (currentAllowance < amount) {
         this.logger.log(
           `Approving ${tokenAddress} for ${amount.toString()} tokens...`,
         );
 
         const approveTx = await tokenContract.approve(
-          NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+          this.uniswapPositionManagerAddress,
           ethers.MaxUint256,
         );
 
@@ -97,34 +228,6 @@ export class UniswapLpService {
     } catch (error) {
       this.logger.error(
         `Failed to approve token ${tokenAddress}: ${error.message}`,
-      );
-      throw error;
-    }
-  }
-
-  async bootstrap(): Promise<void> {
-    try {
-      this.logger.log('Initializing UniswapLpService...');
-
-      // Test connection to provider
-      const network = await this.provider.getNetwork();
-      this.logger.log(
-        `Connected to network: ${network.name} (chainId: ${network.chainId})`,
-      );
-
-      // Test signer
-      const address = await this.signer.getAddress();
-      const balance = await this.provider.getBalance(address);
-      this.logger.log(`Signer address: ${address}`);
-      this.logger.log(`Signer balance: ${ethers.formatEther(balance)} ETH`);
-
-      // Get WBTC/USDC position info
-      await this.getWbtcUsdcPosition();
-
-      this.logger.log('UniswapLpService initialized successfully');
-    } catch (error) {
-      this.logger.error(
-        `Failed to initialize UniswapLpService: ${error.message}`,
       );
       throw error;
     }
@@ -157,8 +260,8 @@ export class UniswapLpService {
 
       return {
         tokenId,
-        token0: new Token(1, position.token0, 18), // Mainnet chainId = 1
-        token1: new Token(1, position.token1, 18),
+        token0: new Token(this.uniswapConfig.chainId, position.token0, 18),
+        token1: new Token(this.uniswapConfig.chainId, position.token1, 18),
         fee: position.fee,
         tickLower: position.tickLower,
         tickUpper: position.tickUpper,
@@ -176,7 +279,6 @@ export class UniswapLpService {
 
   async addLiquidity(params: AddLiquidityParams): Promise<string> {
     try {
-      // return '999399';
       this.logger.log('Approving tokens for liquidity addition...');
 
       await Promise.all([
@@ -269,58 +371,7 @@ export class UniswapLpService {
     }
   }
 
-  async getEarnedFees(
-    tokenId: number,
-    poolAddress = WBTC_USDC_POOL_ADDRESS,
-  ): Promise<{
-    token0Fees: string;
-    token1Fees: string;
-    token0Symbol: string;
-    token1Symbol: string;
-  }> {
-    try {
-      const poolInfo = await fetchPoolInfo(poolAddress);
-
-      const contract = new ethers.Contract(
-        NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
-        NonfungiblePositionManagerABI,
-        this.provider,
-      );
-
-      const MaxUint128 = '340282366920938463463374607431768211455';
-
-      const collectParams = {
-        tokenId: tokenId,
-        recipient: ethers.ZeroAddress,
-        amount0Max: MaxUint128,
-        amount1Max: MaxUint128,
-      };
-
-      const result = await contract.collect.staticCall(collectParams);
-
-      const token0Decimals = parseInt(poolInfo.token0.decimals);
-      const token1Decimals = parseInt(poolInfo.token1.decimals);
-
-      const token0Fees = ethers.formatUnits(result.amount0, token0Decimals);
-      const token1Fees = ethers.formatUnits(result.amount1, token1Decimals);
-
-      this.logger.log(
-        `Uncollected fees - ${poolInfo.token0.symbol}: ${token0Fees}, ${poolInfo.token1.symbol}: ${token1Fees}`,
-      );
-
-      return {
-        token0Fees,
-        token1Fees,
-        token0Symbol: poolInfo.token0.symbol,
-        token1Symbol: poolInfo.token1.symbol,
-      };
-    } catch (error) {
-      this.logger.error('Error getting earned fees:', error.message);
-      throw error;
-    }
-  }
-
-  async getPoolPrice(poolAddress: string): Promise<{
+  async getPoolPrice(poolAddress?: string): Promise<{
     token0ToToken1Rate: number;
     token1ToToken0Rate: number;
     token0Symbol: string;
@@ -328,13 +379,40 @@ export class UniswapLpService {
     formattedPrice: string;
   }> {
     try {
-      this.logger.log(`Getting pool price for ${poolAddress}`);
-      return await getPoolPrice(poolAddress);
+      const targetPoolAddress = poolAddress || this.uniswapConfig.poolAddress;
+
+      this.logger.log(`Getting pool price for ${targetPoolAddress}`);
+
+      // Use the same hybrid approach as getEarnedFees
+      const poolData = this.uniswapConfig.hasSubgraph
+        ? await fetchCurrentPoolData(targetPoolAddress)
+        : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
+
+      const token0Price = parseFloat(poolData.token0Price); // token0 per token1
+      const token1Price = parseFloat(poolData.token1Price); // token1 per token0
+
+      const token0ToToken1Rate = token1Price; // How much token1 for 1 token0
+      const token1ToToken0Rate = token0Price; // How much token0 for 1 token1
+
+      let formattedPrice: string;
+
+      if (token1ToToken0Rate > token0ToToken1Rate) {
+        // token1 is more valuable (like WETH > USDC)
+        formattedPrice = `1 ${poolData.token1.symbol} = ${token1ToToken0Rate.toLocaleString()} ${poolData.token0.symbol}`;
+      } else {
+        // token0 is more valuable (like WBTC > USDC)
+        formattedPrice = `1 ${poolData.token0.symbol} = ${token0ToToken1Rate.toLocaleString()} ${poolData.token1.symbol}`;
+      }
+
+      return {
+        token0ToToken1Rate,
+        token1ToToken0Rate,
+        token0Symbol: poolData.token0.symbol,
+        token1Symbol: poolData.token1.symbol,
+        formattedPrice,
+      };
     } catch (error) {
-      this.logger.error(
-        `Error getting pool price for ${poolAddress}:`,
-        error.message,
-      );
+      this.logger.error(`Error getting pool price: ${error.message}`);
       throw error;
     }
   }
@@ -394,7 +472,7 @@ export class UniswapLpService {
           tokenContract.decimals(),
           tokenContract.allowance(
             signerAddress,
-            NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+            this.uniswapPositionManagerAddress,
           ),
         ]);
 
@@ -410,7 +488,7 @@ export class UniswapLpService {
           );
 
           const tx = await tokenContract.approve(
-            NONFUNGIBLE_POSITION_MANAGER_ADDRESS,
+            this.uniswapPositionManagerAddress,
             maxApproval,
           );
 
@@ -429,19 +507,28 @@ export class UniswapLpService {
   }
 
   async getWbtcUsdcPosition(tokenId: string = '999399'): Promise<void> {
+    const token0Symbol = this.uniswapConfig.tokens.token0.symbol;
+    const token1Symbol = this.uniswapConfig.tokens.token1.symbol;
+
     try {
-      this.logger.log(`Fetching WBTC/USDC position #${tokenId}...`);
+      this.logger.log(
+        `Fetching ${token0Symbol}/${token1Symbol} position #${tokenId}...`,
+      );
 
       const position = await this.getPosition(tokenId);
       console.log('position', position);
 
-      // Format amounts with proper decimals
-      const wbtcAmount = formatUnits(position.token0Balance, 8); // WBTC has 8 decimals
-      const usdcAmount = formatUnits(position.token1Balance, 6); // USDC has 6 decimals
+      const token0Amount = formatUnits(
+        position.token0Balance,
+        this.uniswapConfig.tokens.token0.decimals,
+      );
+      const token1Amount = formatUnits(
+        position.token1Balance,
+        this.uniswapConfig.tokens.token1.decimals,
+      );
 
       // Calculate tick ranges to price
       const tickToPrice = (tick: bigint): number => {
-        // Convert tick to number for the calculation since we can't use ** with bigint
         const tickNumber = Number(tick);
         return 1.0001 ** tickNumber;
       };
@@ -455,18 +542,26 @@ export class UniswapLpService {
       this.logger.log(
         `Price Range: $${lowerPrice.toFixed(2)} - $${upperPrice.toFixed(2)}`,
       );
-      this.logger.log(`WBTC Amount: ${wbtcAmount}`);
-      this.logger.log(`USDC Amount: ${usdcAmount}`);
+      this.logger.log(`${token0Symbol} Amount: ${token0Amount}`);
+      this.logger.log(`${token1Symbol} Amount: ${token1Amount}`);
       this.logger.log(`Liquidity: ${position.liquidity}`);
 
-      // Log uncollected fees
-      const wbtcFees = formatUnits(position.feeGrowthInside0LastX128, 8);
-      const usdcFees = formatUnits(position.feeGrowthInside1LastX128, 6);
+      const token0Fees = formatUnits(
+        position.feeGrowthInside0LastX128,
+        this.uniswapConfig.tokens.token0.decimals,
+      );
+      const token1Fees = formatUnits(
+        position.feeGrowthInside1LastX128,
+        this.uniswapConfig.tokens.token1.decimals,
+      );
+
       this.logger.log(`Uncollected Fees:`);
-      this.logger.log(`- WBTC: ${wbtcFees}`);
-      this.logger.log(`- USDC: ${usdcFees}`);
+      this.logger.log(`- ${token0Symbol}: ${token0Fees}`);
+      this.logger.log(`- ${token1Symbol}: ${token1Fees}`);
     } catch (error) {
-      this.logger.error(`Failed to fetch WBTC/USDC position: ${error.message}`);
+      this.logger.error(
+        `Failed to fetch ${token0Symbol}/${token1Symbol} position: ${error.message}`,
+      );
       throw error;
     }
   }
