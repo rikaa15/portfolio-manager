@@ -1,16 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable } from '@nestjs/common';
 import * as hl from '@nktkas/hyperliquid';
-import { Hex } from '@nktkas/hyperliquid';
-import { Config } from '../config/configuration';
 
 @Injectable()
 export class FundingService {
-  private readonly logger = new Logger(FundingService.name);
   private readonly transport = new hl.HttpTransport();
   private readonly infoClient = new hl.InfoClient({ transport: this.transport });
-
-  constructor(private configService: ConfigService<Config>) {}
 
   async getCurrentFundingRate(coin: string): Promise<{ 
     fundingRate: number; 
