@@ -1,5 +1,13 @@
 import axios from 'axios';
 import 'dotenv/config';
+import { Test, TestingModule } from '@nestjs/testing';
+import { AppService } from './app.service';
+import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
+import { HyperliquidService } from './hyperliquid/hyperliquid.service';
+import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
+import { fetchPoolInfo, fetchPoolDayPrices } from './uniswap-lp/subgraph.client';
+import { ethers } from 'ethers';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -337,15 +345,97 @@ async function runBacktest(
   }
 }
 
-describe('Uniswap LP Backtesting', () => {
-  it('should backtest WBTC/USDC LP performance for 1 year', async () => {
-    await runBacktest(
-      POOL_ADDRESS,
-      '2024-05-29', // Start date (1 year ago)
-      '2025-05-29', // End date (today)
-      INITIAL_INVESTMENT,
-    );
+describe('AppService', () => {
+  let appService: AppService;
+  let uniswapService: UniswapLpService;
+  let hyperliquidService: HyperliquidService;
+  let configService: ConfigService;
+  let logger: Logger;
 
-    expect(true).toBe(true);
-  }, 60000); // 60 second timeout for API calls
+  // Mock data
+  const MOCK_POSITION_ID = '999399';
+  const mockPosition = {
+    token0: {
+      address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', // WBTC
+      symbol: 'WBTC',
+      decimals: 8
+    },
+    token1: {
+      address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+      symbol: 'USDC',
+      decimals: 6
+    },
+    token0Balance: ethers.parseUnits('1', 8), // 1 WBTC
+    token1Balance: ethers.parseUnits('30000', 6), // 30,000 USDC
+    fee: 3000,
+    tokenId: MOCK_POSITION_ID
+  };
+
+  const mockPoolPrice = {
+    token0ToToken1Rate: 30000, // 30,000 USDC per WBTC
+    token1ToToken0Rate: 1 / 30000
+  };
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AppService,
+        {
+          provide: UniswapLpService,
+          useValue: {
+            getPosition: jest.fn().mockResolvedValue(mockPosition),
+            getPoolPrice: jest.fn().mockResolvedValue(mockPoolPrice),
+            collectFees: jest.fn().mockResolvedValue(undefined),
+            getSignerAddress: jest.fn().mockResolvedValue('0x1234...'),
+          }
+        },
+        {
+          provide: HyperliquidService,
+          useValue: {
+            getFundingRate: jest.fn().mockResolvedValue(0.0005), // 0.05% funding rate
+            getPositionSize: jest.fn().mockResolvedValue(0),
+            closePosition: jest.fn().mockResolvedValue(undefined),
+          }
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockReturnValue('https://eth-mainnet.alchemyapi.io/v2/your-api-key')
+          }
+        },
+        {
+          provide: Logger,
+          useValue: {
+            log: jest.fn(),
+            error: jest.fn(),
+            warn: jest.fn(),
+            debug: jest.fn()
+          }
+        }
+      ]
+    }).compile();
+
+    appService = module.get<AppService>(AppService);
+    uniswapService = module.get<UniswapLpService>(UniswapLpService);
+    hyperliquidService = module.get<HyperliquidService>(HyperliquidService);
+    configService = module.get<ConfigService>(ConfigService);
+    logger = module.get<Logger>(Logger);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Uniswap LP Backtesting', () => {
+    it('should backtest WBTC/USDC LP performance for 1 year', async () => {
+      await runBacktest(
+        POOL_ADDRESS,
+        '2024-05-29', // Start date (1 year ago)
+        '2025-05-29', // End date (today)
+        INITIAL_INVESTMENT,
+      );
+  
+      expect(true).toBe(true);
+    }, 60000); // 60 second timeout for API calls
+  });
 });
