@@ -242,6 +242,11 @@ async function runBacktest(
   logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
   logger.log('');
 
+  const initialFuturesNotional = initialAmount / 2
+  let futuresNotional = initialFuturesNotional
+  let futuresLeverage = 10
+  let futuresDirection = 'short'
+
   try {
     // Get pool information
     logger.log('Fetching pool information...');
@@ -282,7 +287,7 @@ async function runBacktest(
       startTime: new Date(startDate).getTime(),
       endTime: new Date(endDate).getTime(),
     });
-    logger.log(`Found ${candles.length} candles`);
+    logger.log(`Found ${candles.length} candles, ${JSON.stringify(candles[0])}`);
 
     // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
@@ -306,13 +311,18 @@ async function runBacktest(
       const date = formatDate(dayData.date);
 
       // Get nearest funding rate for the day
-      const fundingRate = fundingRates.find(rate => Math.abs(Math.round(rate.time / 1000) - dayData.date) < 8 * 60 * 60);
-      if (!fundingRate) {
-        throw new Error(`No funding rate found for ${date}`);
+      const ratesData = fundingRates.find(rate => Math.abs(Math.round(rate.time / 1000) - dayData.date) <= 8 * 60 * 60);
+      if (!ratesData) {
+        logger.error(`No funding rate found for ${date}`);
+      } else {
+        // logger.log(`Funding rate for ${date}: ${ratesData.fundingRate}`);
       }
 
-      if(fundingRate.fundingRate > 0.0008) {
-        logger.error(`Funding rate for ${date} is too high: ${fundingRate.fundingRate}`);
+      if(ratesData.fundingRate > 0.0005) {
+        // This adjustment helps protect your net returns by limiting funding payments that could otherwise offset LP fee income
+        futuresNotional = futuresNotional - (futuresNotional * 0.05)
+      } else if(ratesData.fundingRate < 0) {
+        futuresNotional = futuresNotional + (futuresNotional * 0.1)
       }
 
       // Calculate daily fee earnings
@@ -362,14 +372,19 @@ async function runBacktest(
       (cumulativeFees / initialAmount) * (365 / poolDayData.length) * 100;
 
     logger.log('');
-    logger.log('=== Final Summary ===');
-    logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
+    logger.log('=== LP Summary ===');
+    logger.log(`Initial LP value: $${initialAmount.toLocaleString()}`);
     logger.log(`Final Position Value: $${finalPositionValue.toLocaleString()}`);
     logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
     logger.log(
       `Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`,
     );
     logger.log(`Annualized APR (Fees Only): ${finalAPR.toFixed(2)}%`);
+
+    logger.log('');
+    logger.log('=== Futures Summary ===');
+    logger.log(`Initial futures notional: $${initialFuturesNotional.toLocaleString()}`);
+    logger.log(`Futures Notional: $${futuresNotional.toLocaleString()}`);
   } catch (error: any) {
     if (error.message) {
       logger.error('Backtest failed: ' + error.message);
@@ -464,7 +479,7 @@ describe('AppService', () => {
         hyperliquidService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2024-06-02', // End date (today)
+        '2024-06-30', // End date (today)
         INITIAL_INVESTMENT,
       );
   
