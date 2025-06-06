@@ -381,10 +381,25 @@ async function runBacktest(
     );
     logger.log(`Annualized APR (Fees Only): ${finalAPR.toFixed(2)}%`);
 
+    // Calculate futures PnL
+    const candleData = candles.map((c: any) => ({
+      ts: new Date(Number(c.T)),
+      close: parseFloat(c.c),
+    }));
+    const entryPrice = candleData[0].close;
+    const exitPrice = candleData[candleData.length - 1].close;
+    const priceDiff = futuresDirection === 'long' ? exitPrice - entryPrice : entryPrice - exitPrice;
+    const futuresPnL = (priceDiff / entryPrice) * futuresNotional * futuresLeverage;
+    const futuresReturn = (futuresPnL / initialFuturesNotional) * 100;
+    const futuresAPR = (futuresReturn / poolDayData.length) * 365;
+
     logger.log('');
     logger.log('=== Futures Summary ===');
     logger.log(`Initial futures notional: $${initialFuturesNotional.toLocaleString()}`);
     logger.log(`Futures Notional: $${futuresNotional.toLocaleString()}`);
+    logger.log(`Futures PnL: $${futuresPnL.toLocaleString()}`);
+    logger.log(`Futures Return: ${futuresReturn >= 0 ? '+' : ''}${futuresReturn.toFixed(2)}%`);
+    logger.log(`Futures Annualized APR: ${futuresAPR.toFixed(2)}%`);
   } catch (error: any) {
     if (error.message) {
       logger.error('Backtest failed: ' + error.message);
@@ -479,7 +494,7 @@ describe('AppService', () => {
         hyperliquidService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2024-06-30', // End date (today)
+        '2024-08-30', // End date (today)
         INITIAL_INVESTMENT,
       );
   
