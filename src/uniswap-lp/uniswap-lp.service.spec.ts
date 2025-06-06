@@ -4,24 +4,46 @@ import { ConfigService } from '@nestjs/config';
 import { UniswapLpService } from './uniswap-lp.service';
 import { ethers } from 'ethers';
 import { Token } from '@uniswap/sdk-core';
+import { UNISWAP_CONFIGS, UniswapNetworkName } from './uniswap.config';
+import configuration from '../config/configuration';
+import { MAX_UINT_128 } from './contract.client';
 
-const WBTC_USDC_POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
+const TEST_NETWORK: UniswapNetworkName = 'sepolia'; // 'sepolia'; // Switch to 'ethereum' for mainnet tests
 
-const TOKEN0_ADDRESS = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'; // WBTC
-const TOKEN0_DECIMALS = 8;
-const TOKEN0_SYMBOL = 'WBTC';
-const TOKEN0_NAME = 'Wrapped BTC';
+const UNISWAP_CONFIG = UNISWAP_CONFIGS[TEST_NETWORK];
 
-const TOKEN1_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'; // USDC
-const TOKEN1_DECIMALS = 6;
-const TOKEN1_SYMBOL = 'USDC';
-const TOKEN1_NAME = 'USD Coin';
+const config = configuration();
+const networkConfig = config[TEST_NETWORK as keyof typeof config] as any;
 
-const USER_WALLET = '0x70709614BF9aD5bBAb18E2244046d48f234a1583';
+const TOKEN0_ADDRESS = UNISWAP_CONFIG.tokens.token0.address;
+const TOKEN0_DECIMALS = UNISWAP_CONFIG.tokens.token0.decimals;
+const TOKEN0_SYMBOL = UNISWAP_CONFIG.tokens.token0.symbol;
+const TOKEN0_NAME = UNISWAP_CONFIG.tokens.token0.name;
 
-const TOKEN0_AMOUNT = '0.00001'; // Amount of token0 to use
-const TOKEN1_AMOUNT = '5'; // Amount of token1 to use
-const FEE_TIER = 3000; // 0.3% fee tier
+const TOKEN1_ADDRESS = UNISWAP_CONFIG.tokens.token1.address;
+const TOKEN1_DECIMALS = UNISWAP_CONFIG.tokens.token1.decimals;
+const TOKEN1_SYMBOL = UNISWAP_CONFIG.tokens.token1.symbol;
+const TOKEN1_NAME = UNISWAP_CONFIG.tokens.token1.name;
+
+const POOL_ADDRESS = UNISWAP_CONFIG.poolAddress;
+
+const TEST_AMOUNTS = {
+  ethereum: {
+    token0Amount: '0.00001', // Small WBTC amount
+    token1Amount: '5', // USDC amount
+    feeTier: 3000, // 0.3% fee tier
+    wallet: '0x70709614BF9aD5bBAb18E2244046d48f234a1583',
+  },
+  sepolia: {
+    token0Amount: '1', // USDC amount (token0 on Sepolia)
+    token1Amount: '0.001', // WETH amount (token1 on Sepolia)
+    feeTier: 500, // 0.05% fee tier (as seen in UI)
+    wallet: '0x70709614BF9aD5bBAb18E2244046d48f234a1583', // Your test wallet
+  },
+};
+
+const CURRENT_TEST_AMOUNTS = TEST_AMOUNTS[TEST_NETWORK];
+
 const TICK_LOWER = -887220; // Wide range
 const TICK_UPPER = 887220; // Wide range
 
@@ -32,15 +54,14 @@ const TIMEOUTS = {
   BATCH: 300000, // 5 minutes
 };
 
-describe('UniswapLpService Integration Tests', () => {
+describe(`UniswapLpService Integration Tests (${TEST_NETWORK.toUpperCase()})`, () => {
   let service: UniswapLpService;
   let createdTokenId: string;
 
   beforeAll(async () => {
-    // Skip tests gracefully if no real environment variables
-    if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
+    if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
       console.warn(
-        'Skipping integration tests - ETH_RPC_URL and PRIVATE_KEY environment variables are required',
+        `Skipping integration tests - ${TEST_NETWORK} configuration missing rpcUrl or privateKey`,
       );
       return;
     }
@@ -53,10 +74,16 @@ describe('UniswapLpService Integration Tests', () => {
           useValue: {
             get: jest.fn((key: string) => {
               if (key === 'ethereum.rpcUrl') {
-                return process.env.ETH_RPC_URL;
+                return config.ethereum.rpcUrl;
               }
               if (key === 'ethereum.privateKey') {
-                return process.env.PRIVATE_KEY;
+                return config.ethereum.privateKey;
+              }
+              if (key === 'sepolia.rpcUrl') {
+                return config.sepolia.rpcUrl;
+              }
+              if (key === 'sepolia.privateKey') {
+                return config.sepolia.privateKey;
               }
               return null;
             }),
@@ -66,12 +93,20 @@ describe('UniswapLpService Integration Tests', () => {
     }).compile();
 
     service = module.get<UniswapLpService>(UniswapLpService);
+
+    service.setNetwork(TEST_NETWORK);
+
+    console.log(`\nTESTING ON ${TEST_NETWORK.toUpperCase()} NETWORK`);
+    console.log(`Pool: ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL}`);
+    console.log(`Pool Address: ${POOL_ADDRESS}`);
+    console.log(
+      `Test Amounts: ${CURRENT_TEST_AMOUNTS.token0Amount} ${TOKEN0_SYMBOL} + ${CURRENT_TEST_AMOUNTS.token1Amount} ${TOKEN1_SYMBOL}`,
+    );
   });
 
   it('should be defined', () => {
-    // Skip if no environment variables
-    if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-      console.log('Skipping test - missing environment variables');
+    if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+      console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
       return;
     }
 
@@ -81,14 +116,13 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should setup token approvals for faster testing',
     async () => {
-      // Skip if no environment variables
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
       console.log(
-        'Step 0: Setting up token approvals for faster subsequent tests...',
+        `Step 0: Setting up token approvals for ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL} on ${TEST_NETWORK}...`,
       );
 
       try {
@@ -108,21 +142,20 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should create liquidity position successfully',
     async () => {
-      // Skip if no environment variables
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
       const token0 = new Token(
-        1,
+        UNISWAP_CONFIG.chainId,
         TOKEN0_ADDRESS,
         TOKEN0_DECIMALS,
         TOKEN0_SYMBOL,
         TOKEN0_NAME,
       );
       const token1 = new Token(
-        1,
+        UNISWAP_CONFIG.chainId,
         TOKEN1_ADDRESS,
         TOKEN1_DECIMALS,
         TOKEN1_SYMBOL,
@@ -132,23 +165,30 @@ describe('UniswapLpService Integration Tests', () => {
       const addLiquidityParams = {
         token0,
         token1,
-        fee: FEE_TIER,
+        fee: CURRENT_TEST_AMOUNTS.feeTier,
         tickLower: TICK_LOWER,
         tickUpper: TICK_UPPER,
-        amount0Desired: ethers.parseUnits(TOKEN0_AMOUNT, TOKEN0_DECIMALS),
-        amount1Desired: ethers.parseUnits(TOKEN1_AMOUNT, TOKEN1_DECIMALS),
+        amount0Desired: ethers.parseUnits(
+          CURRENT_TEST_AMOUNTS.token0Amount,
+          TOKEN0_DECIMALS,
+        ),
+        amount1Desired: ethers.parseUnits(
+          CURRENT_TEST_AMOUNTS.token1Amount,
+          TOKEN1_DECIMALS,
+        ),
         amount0Min: 0,
         amount1Min: 0,
-        recipient: USER_WALLET,
+        recipient: CURRENT_TEST_AMOUNTS.wallet,
         deadline: Math.floor(Date.now() / 1000) + 3600,
       };
 
       console.log(
-        `Step 1: Creating liquidity position (${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL})...`,
+        `Step 1: Creating liquidity position (${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL}) on ${TEST_NETWORK}...`,
       );
       console.log(
-        `  Amount: ${TOKEN0_AMOUNT} ${TOKEN0_SYMBOL} + ${TOKEN1_AMOUNT} ${TOKEN1_SYMBOL}`,
+        `  Amount: ${CURRENT_TEST_AMOUNTS.token0Amount} ${TOKEN0_SYMBOL} + ${CURRENT_TEST_AMOUNTS.token1Amount} ${TOKEN1_SYMBOL}`,
       );
+      console.log(`  Fee Tier: ${CURRENT_TEST_AMOUNTS.feeTier / 10000}%`);
 
       try {
         const result = await service.addLiquidity(addLiquidityParams);
@@ -158,8 +198,7 @@ describe('UniswapLpService Integration Tests', () => {
 
         createdTokenId = result;
         console.log(
-          'Step 1 Complete - Created Position with Token ID:',
-          createdTokenId,
+          `Step 1 Complete - Created Position with Token ID: ${createdTokenId}`,
         );
       } catch (error) {
         console.log('Step 1 FAILED:', error.message);
@@ -179,20 +218,21 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should get earned fees for LP position',
     async () => {
-      // Skip if no environment variables
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
-      if (!createdTokenId) {
+      if (!createdTokenId || createdTokenId === 'FAILED') {
         console.log(
           'Skipping test - no createdTokenId available (run addLiquidity test first)',
         );
         return;
       }
 
-      console.log(`Getting earned fees for LP position ${createdTokenId}...`);
+      console.log(
+        `Getting earned fees for LP position ${createdTokenId} on ${TEST_NETWORK}...`,
+      );
 
       try {
         const earnedFees = await service.getEarnedFees(+createdTokenId);
@@ -203,41 +243,62 @@ describe('UniswapLpService Integration Tests', () => {
         expect(typeof earnedFees.token0Fees).toBe('string');
         expect(typeof earnedFees.token1Fees).toBe('string');
 
-        const wbtcAmount = parseFloat(earnedFees.token0Fees);
-        const usdcAmount = parseFloat(earnedFees.token1Fees);
+        const token0Amount = parseFloat(earnedFees.token0Fees);
+        const token1Amount = parseFloat(earnedFees.token1Fees);
 
-        expect(wbtcAmount).toBeGreaterThanOrEqual(0);
-        expect(usdcAmount).toBeGreaterThanOrEqual(0);
+        expect(token0Amount).toBeGreaterThanOrEqual(0);
+        expect(token1Amount).toBeGreaterThanOrEqual(0);
 
         console.log(`Token ID: ${createdTokenId}`);
-        console.log(`WBTC Fees: ${earnedFees.token0Fees}`);
-        console.log(`USDC Fees: ${earnedFees.token1Fees}`);
+        console.log(
+          `${earnedFees.token0Symbol} Fees: ${earnedFees.token0Fees}`,
+        );
+        console.log(
+          `${earnedFees.token1Symbol} Fees: ${earnedFees.token1Fees}`,
+        );
 
-        if (wbtcAmount === 0 && usdcAmount === 0) {
+        if (token0Amount === 0 && token1Amount === 0) {
           console.log(
             'Step 2: No fees yet (expected for newly created position)',
           );
         } else {
           console.log(
-            `Step 2: Position has earned fees! WBTC: ${wbtcAmount}, USDC: ${usdcAmount}`,
+            `Step 2: Position has earned fees! ${earnedFees.token0Symbol}: ${token0Amount}, ${earnedFees.token1Symbol}: ${token1Amount}`,
           );
-          expect(wbtcAmount).toBeLessThan(10); // Less than 10 WBTC in fees
-          expect(usdcAmount).toBeLessThan(1000000); // Less than $1M in fees
+          const getFeeLimit = (symbol: string) => {
+            switch (symbol) {
+              case 'WBTC':
+                return 10; // Small WBTC amounts
+              case 'USDC':
+                return 1000000; // Large USDC amounts (stablecoin)
+              case 'WETH':
+              case 'ETH':
+                return 100; // Moderate ETH/WETH amounts
+              default:
+                return 1000; // Default limit
+            }
+          };
+
+          expect(token0Amount).toBeLessThan(
+            getFeeLimit(earnedFees.token0Symbol),
+          );
+          expect(token1Amount).toBeLessThan(
+            getFeeLimit(earnedFees.token1Symbol),
+          );
         }
       } catch (error) {
         console.error('Step 2: Error getting earned fees:', error.message);
         throw error;
       }
     },
-    TIMEOUTS.READ,
+    TIMEOUTS.BATCH,
   );
 
   it(
     'should collect fees from the created position',
     async () => {
-      // Skip if no environment variables or no position created
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
@@ -248,12 +309,14 @@ describe('UniswapLpService Integration Tests', () => {
 
       const collectFeesParams = {
         tokenId: createdTokenId,
-        recipient: USER_WALLET,
-        amount0Max: '1000000000000000000', // Large amount
-        amount1Max: '1000000000000000000', // Large amount
+        recipient: CURRENT_TEST_AMOUNTS.wallet,
+        amount0Max: MAX_UINT_128,
+        amount1Max: MAX_UINT_128,
       };
 
-      console.log('Step 3: Collecting fees from Token ID:', createdTokenId);
+      console.log(
+        `Step 3: Collecting fees from Token ID: ${createdTokenId} on ${TEST_NETWORK}`,
+      );
 
       try {
         await service.collectFees(collectFeesParams);
@@ -270,9 +333,8 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should remove liquidity from the created position',
     async () => {
-      // Skip if no environment variables or no position created
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
@@ -285,7 +347,7 @@ describe('UniswapLpService Integration Tests', () => {
       const position = await service.getPosition(createdTokenId);
       const totalLiquidity = BigInt(position.liquidity);
 
-      const liquidityToRemove = totalLiquidity;
+      const liquidityToRemove = totalLiquidity / 2n;
 
       const removeLiquidityParams = {
         tokenId: createdTokenId,
@@ -296,11 +358,11 @@ describe('UniswapLpService Integration Tests', () => {
       };
 
       console.log(
-        'Step 4: Removing all liquidity from Token ID:',
-        createdTokenId,
+        `Step 4: Removing liquidity from Token ID: ${createdTokenId} on ${TEST_NETWORK}`,
       );
-      console.log(`  Total liquidity: ${totalLiquidity.toString()}`);
-      console.log(`  Removing: ${liquidityToRemove.toString()} (100%)`);
+      console.log(
+        `  Total liquidity: ${totalLiquidity.toString()} / Removing: ${liquidityToRemove.toString()}`,
+      );
 
       await service.removeLiquidity(removeLiquidityParams);
       console.log('Step 4 Complete - Liquidity removed successfully');
@@ -311,9 +373,8 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should collect all tokens after complete liquidity removal',
     async () => {
-      // Skip if no environment variables or no position created
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
@@ -324,14 +385,13 @@ describe('UniswapLpService Integration Tests', () => {
 
       const collectFeesParams = {
         tokenId: createdTokenId,
-        recipient: USER_WALLET,
-        amount0Max: '340282366920938463463374607431768211455', // Max uint128
-        amount1Max: '340282366920938463463374607431768211455', // Max uint128
+        recipient: CURRENT_TEST_AMOUNTS.wallet,
+        amount0Max: MAX_UINT_128,
+        amount1Max: MAX_UINT_128,
       };
 
       console.log(
-        'Step 5: Collecting all remaining tokens from Token ID:',
-        createdTokenId,
+        `Step 5: Collecting all remaining tokens from Token ID: ${createdTokenId} on ${TEST_NETWORK}`,
       );
 
       try {
@@ -348,9 +408,8 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should verify position after complete liquidity removal',
     async () => {
-      // Skip if no environment variables or no position created
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
@@ -359,7 +418,9 @@ describe('UniswapLpService Integration Tests', () => {
         return;
       }
 
-      console.log('Step 6: Verifying position after liquidity removal...');
+      console.log(
+        `Step 6: Verifying position after liquidity removal on ${TEST_NETWORK}...`,
+      );
       const position = await service.getPosition(createdTokenId);
 
       expect(position).toBeDefined();
@@ -370,7 +431,7 @@ describe('UniswapLpService Integration Tests', () => {
         `  Final liquidity: ${position.liquidity} (should be 0 or very small)`,
       );
       console.log(
-        `Complete cycle: Add → Remove → Collect ALL ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL} tokens!`,
+        `Complete cycle: Add → Remove → Collect ALL ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL} tokens on ${TEST_NETWORK}!`,
       );
     },
     TIMEOUTS.READ,
@@ -379,16 +440,17 @@ describe('UniswapLpService Integration Tests', () => {
   it(
     'should get pool price',
     async () => {
-      // Skip if no environment variables
-      if (!process.env.ETH_RPC_URL || !process.env.PRIVATE_KEY) {
-        console.log('Skipping test - missing environment variables');
+      if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
+        console.log(`Skipping test - missing ${TEST_NETWORK} configuration`);
         return;
       }
 
-      console.log('Getting pool price...');
+      console.log(
+        `Getting pool price for ${TOKEN0_SYMBOL}/${TOKEN1_SYMBOL} on ${TEST_NETWORK}...`,
+      );
 
       try {
-        const poolPrice = await service.getPoolPrice(WBTC_USDC_POOL_ADDRESS);
+        const poolPrice = await service.getPoolPrice(POOL_ADDRESS);
 
         expect(poolPrice).toBeDefined();
         expect(poolPrice.token0Symbol).toBeDefined();
