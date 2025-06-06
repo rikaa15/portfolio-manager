@@ -31,26 +31,83 @@ export class FundingService {
   }
 
   async getHistoricalFundingRates(
-    coin: string, 
-    startTime: number, 
-    endTime: number
+    coin: string,
+    startTime: number,
+    endTime: number,
+    chunkSizeDays: number = 18
   ): Promise<Array<{
     coin: string;
     fundingRate: number;
     premium: number;
     time: number;
   }>> {
-    const response = await this.infoClient.fundingHistory({
-      coin,
-      startTime,
-      endTime
-    });
+    const chunkSizeMs = chunkSizeDays * 24 * 60 * 60 * 1000;
+    const totalDays = (endTime - startTime) / (24 * 60 * 60 * 1000);
     
-    return response.map((item: any) => ({
-      coin: item.coin,
-      fundingRate: parseFloat(item.fundingRate),
-      premium: parseFloat(item.premium),
-      time: item.time
-    }));
+    if (totalDays <= chunkSizeDays) {
+      const response = await this.infoClient.fundingHistory({
+        coin,
+        startTime,
+        endTime
+      });
+      
+      return response.map((item: any) => ({
+        coin: item.coin,
+        fundingRate: parseFloat(item.fundingRate),
+        premium: parseFloat(item.premium),
+        time: item.time
+      }));
+    }
+
+    const allResults: Array<{
+      coin: string;
+      fundingRate: number;
+      premium: number;
+      time: number;
+    }> = [];
+
+    let currentStart = startTime;
+    let chunkCount = 0;
+
+    while (currentStart < endTime) {
+      const currentEnd = Math.min(currentStart + chunkSizeMs, endTime);
+      chunkCount++;
+
+      console.log(`Chunk ${chunkCount}: ${new Date(currentStart).toISOString()} to ${new Date(currentEnd).toISOString()}`);
+
+      try {
+        const response = await this.infoClient.fundingHistory({
+          coin,
+          startTime: currentStart,
+          endTime: currentEnd
+        });
+
+        const chunkResults = response.map((item: any) => ({
+          coin: item.coin,
+          fundingRate: parseFloat(item.fundingRate),
+          premium: parseFloat(item.premium),
+          time: item.time
+        }));
+
+        allResults.push(...chunkResults);
+        
+        console.log(`  → Retrieved ${chunkResults.length} entries`);
+
+        if (currentEnd < endTime) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+      } catch (error) {
+        console.error(`Error fetching chunk ${chunkCount}:`, error);
+      }
+
+      currentStart = currentEnd;
+    }
+
+    allResults.sort((a, b) => a.time - b.time);
+
+    console.log(`Total entries retrieved: ${allResults.length} across ${chunkCount} chunks`);
+
+    return allResults;
   }
 }

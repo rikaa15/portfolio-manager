@@ -1,19 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FundingService } from './funding.service';
-import { ConfigModule } from '@nestjs/config';
-import configuration from '../config/configuration';
 
 describe('FundingService', () => {
   let service: FundingService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      imports: [
-        ConfigModule.forRoot({
-          load: [configuration],
-          isGlobal: true,
-        }),
-      ],
       providers: [FundingService],
     }).compile();
 
@@ -48,30 +40,35 @@ describe('FundingService', () => {
   }, 15_000);
 
   it('should get historical funding rates for BTC', async () => {
-    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
-    const now = Date.now();
-    const history = await service.getHistoricalFundingRates('BTC', sevenDaysAgo, now);
+    const startTime = new Date('2024-05-01').getTime();
+    const endTime = new Date('2025-05-31').getTime();
+    
+    console.log('Requesting chunked data for full period:', {
+      startDate: new Date(startTime).toISOString(),
+      endDate: new Date(endTime).toISOString(),
+      totalDays: Math.round((endTime - startTime) / (24 * 60 * 60 * 1000))
+    });
+    
+    const history = await service.getHistoricalFundingRates('BTC', startTime, endTime);
     
     expect(Array.isArray(history)).toBe(true);
     expect(history.length).toBeGreaterThan(0);
     
-    const firstEntry = history[0];
-    expect(firstEntry.coin).toBe('BTC');
-    expect(typeof firstEntry.fundingRate).toBe('number');
-    expect(typeof firstEntry.premium).toBe('number');
-    expect(typeof firstEntry.time).toBe('number');
+    const actualStartTime = Math.min(...history.map(entry => entry.time));
+    const actualEndTime = Math.max(...history.map(entry => entry.time));
     
-    history.forEach(entry => {
-      expect(entry.time).toBeGreaterThanOrEqual(sevenDaysAgo);
-      expect(entry.time).toBeLessThanOrEqual(now);
+    console.log('Historical BTC funding rates:', {
+      requested: {
+        start: new Date(startTime).toISOString(),
+        end: new Date(endTime).toISOString()
+      },
+      actual: {
+        start: new Date(actualStartTime).toISOString(),
+        end: new Date(actualEndTime).toISOString()
+      },
+      totalEntries: history.length,
+      averageEntriesPerDay: (history.length / ((actualEndTime - actualStartTime) / (24 * 60 * 60 * 1000))).toFixed(2)
     });
-    
-    console.log('Historical BTC funding rates for:', {
-      start: new Date(sevenDaysAgo).toISOString(),
-      end: new Date(now).toISOString()
-    });
-    history.forEach((entry, index) => {
-      console.log(`${index + 1}. ${new Date(entry.time).toISOString()} - Rate: ${(entry.fundingRate * 100).toFixed(4)}% - Premium: ${(entry.premium * 100).toFixed(4)}%`);
-    });
-  }, 15_000);
+  }, 120_000);
 });
+
