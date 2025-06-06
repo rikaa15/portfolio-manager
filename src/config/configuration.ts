@@ -16,6 +16,7 @@ export interface Config {
     contracts: {
       uniswapPositionManager: string;
     };
+  };
   hyperliquid: {
     privateKey: string;
   };
@@ -41,4 +42,4 @@ export default (): Config => ({
   hyperliquid: {
     privateKey: process.env.HL_KEY || '',
   },
-}); 
+});
