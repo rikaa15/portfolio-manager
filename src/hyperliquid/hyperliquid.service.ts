@@ -8,7 +8,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 export class HyperliquidService {
   private readonly logger = new Logger(HyperliquidService.name);
   private readonly transport = new hl.HttpTransport();
-  private readonly infoClient = new hl.InfoClient({ transport: this.transport });
+  public readonly infoClient = new hl.InfoClient({ transport: this.transport });
   private readonly exchangeClient: hl.ExchangeClient;
 
   constructor(private configService: ConfigService) {

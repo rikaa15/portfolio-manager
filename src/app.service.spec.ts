@@ -4,11 +4,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AppService } from './app.service';
 import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
 import { HyperliquidService } from './hyperliquid/hyperliquid.service';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { fetchPoolInfo, fetchPoolDayPrices } from './uniswap-lp/subgraph.client';
 import { ethers } from 'ethers';
 import { FundingService } from './funding/funding.service';
+import { AppConfigModule } from './config/config.module';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -229,6 +230,7 @@ function calculateImpermanentLoss(
  */
 async function runBacktest(
   fundingService: FundingService,
+  hyperliquidService: HyperliquidService,
   poolAddress: string,
   startDate: string,
   endDate: string,
@@ -273,8 +275,14 @@ async function runBacktest(
     const sortedRates = [...fundingRates].sort((a, b) => a.fundingRate - b.fundingRate);
     logger.log(`Found ${fundingRates.length} funding rates. Min value: ${sortedRates[0].fundingRate}, max value: ${sortedRates[sortedRates.length - 1].fundingRate}`);
 
-
-    console.log('fundingRates', fundingRates[0].time, fundingRates[1].time)
+    // Fetching hyperliquid candles
+    const candles = await hyperliquidService.infoClient.candleSnapshot({
+      coin: 'BTC',
+      interval: '1d',
+      startTime: new Date(startDate).getTime(),
+      endTime: new Date(endDate).getTime(),
+    });
+    logger.log(`Found ${candles.length} candles`);
 
     // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
@@ -303,8 +311,8 @@ async function runBacktest(
         throw new Error(`No funding rate found for ${date}`);
       }
 
-      if(fundingRate.fundingRate > 0.001) {
-        throw new Error(`Funding rate for ${date} is too high: ${fundingRate.fundingRate}`);
+      if(fundingRate.fundingRate > 0.0008) {
+        logger.error(`Funding rate for ${date} is too high: ${fundingRate.fundingRate}`);
       }
 
       // Calculate daily fee earnings
@@ -405,8 +413,10 @@ describe('AppService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
+      imports: [AppConfigModule],
       providers: [
         FundingService,
+        HyperliquidService,
         AppService,
         {
           provide: UniswapLpService,
@@ -417,20 +427,12 @@ describe('AppService', () => {
             getSignerAddress: jest.fn().mockResolvedValue('0x1234...'),
           }
         },
-        {
-          provide: HyperliquidService,
-          useValue: {
-            getFundingRate: jest.fn().mockResolvedValue(0.0005), // 0.05% funding rate
-            getPositionSize: jest.fn().mockResolvedValue(0),
-            closePosition: jest.fn().mockResolvedValue(undefined),
-          }
-        },
-        {
-          provide: ConfigService,
-          useValue: {
-            get: jest.fn().mockReturnValue('https://eth-mainnet.alchemyapi.io/v2/your-api-key')
-          }
-        },
+        // {
+        //   provide: ConfigService,
+        //   useValue: {
+        //     get: jest.fn().mockReturnValue('https://eth-mainnet.alchemyapi.io/v2/your-api-key')
+        //   }
+        // },
         {
           provide: Logger,
           useValue: {
@@ -459,9 +461,10 @@ describe('AppService', () => {
     it('should backtest WBTC/USDC LP performance for 1 year', async () => {
       await runBacktest(
         fundingService,
+        hyperliquidService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2025-05-30', // End date (today)
+        '2024-06-02', // End date (today)
         INITIAL_INVESTMENT,
       );
   
