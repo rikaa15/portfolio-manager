@@ -1,4 +1,5 @@
 import axios from 'axios';
+import 'dotenv/config';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 

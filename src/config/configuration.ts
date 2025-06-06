@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 export interface Config {
   port: number;
+  walletAddress: string;
   ethereum: {
     rpcUrl: string;
     privateKey: string;
@@ -15,11 +16,14 @@ export interface Config {
     contracts: {
       uniswapPositionManager: string;
     };
+  hyperliquid: {
+    privateKey: string;
   };
 }
 
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
+  walletAddress: process.env.WALLET_ADDRESS || '',
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',
     privateKey: process.env.PRIVATE_KEY || '',
@@ -34,4 +38,7 @@ export default (): Config => ({
       uniswapPositionManager: '0x1238536071E1c677A632429e3655c799b22cDA52',
     },
   },
-});
+  hyperliquid: {
+    privateKey: process.env.HL_KEY || '',
+  },
+}); 
