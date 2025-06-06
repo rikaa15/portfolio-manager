@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
 import { fetchPoolInfo, fetchPoolDayPrices } from './uniswap-lp/subgraph.client';
 import { ethers } from 'ethers';
+import { FundingService } from './funding/funding.service';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -227,6 +228,7 @@ function calculateImpermanentLoss(
  * Run backtest simulation
  */
 async function runBacktest(
+  fundingService: FundingService,
   poolAddress: string,
   startDate: string,
   endDate: string,
@@ -260,6 +262,15 @@ async function runBacktest(
     logger.log(`Found ${poolDayData.length} days of data`);
     logger.log('');
 
+    // Fetch finding rates history
+    logger.log(`Fetching funding rates from ${startDate} to ${endDate}...`);
+    const fundingRates = await fundingService.getHistoricalFundingRates(
+      'BTC',
+      new Date(startDate).getTime(),
+      new Date(endDate).getTime()
+    );
+    logger.log(`Found ${fundingRates.length} funding rates. First value: ${fundingRates[0].fundingRate}, time: ${fundingRates[0].time}`);
+
     // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
     const lpSharePercentage = initialAmount / parseFloat(firstDay.tvlUSD);
@@ -280,6 +291,15 @@ async function runBacktest(
     poolDayData.forEach((dayData, index) => {
       const dayNumber = index + 1;
       const date = formatDate(dayData.date);
+
+      // Get nearest funding rate for the day
+      const fundingRate = fundingRates.find(rate => Math.abs(Math.round(rate.time / 1000) - dayData.date) < 8 * 60 * 60);
+      if (!fundingRate) {
+        logger.log(`No funding rate found for ${date}`);
+      } else {
+        // logger.log(`Funding rate for ${date}: ${fundingRate.fundingRate}, funding time: ${fundingRate.time}`);
+      }
+      
 
       // Calculate daily fee earnings
       const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
@@ -350,6 +370,7 @@ describe('AppService', () => {
   let uniswapService: UniswapLpService;
   let hyperliquidService: HyperliquidService;
   let configService: ConfigService;
+  let fundingService: FundingService;
   let logger: Logger;
 
   // Mock data
@@ -379,6 +400,7 @@ describe('AppService', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        FundingService,
         AppService,
         {
           provide: UniswapLpService,
@@ -419,6 +441,7 @@ describe('AppService', () => {
     uniswapService = module.get<UniswapLpService>(UniswapLpService);
     hyperliquidService = module.get<HyperliquidService>(HyperliquidService);
     configService = module.get<ConfigService>(ConfigService);
+    fundingService = module.get<FundingService>(FundingService);
     logger = module.get<Logger>(Logger);
   });
 
@@ -429,9 +452,10 @@ describe('AppService', () => {
   describe('Uniswap LP Backtesting', () => {
     it('should backtest WBTC/USDC LP performance for 1 year', async () => {
       await runBacktest(
+        fundingService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2025-05-29', // End date (today)
+        '2024-05-31', // End date (today)
         INITIAL_INVESTMENT,
       );
   

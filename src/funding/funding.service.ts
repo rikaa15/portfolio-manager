@@ -73,7 +73,7 @@ export class FundingService {
       const currentEnd = Math.min(currentStart + chunkSizeMs, endTime);
       chunkCount++;
 
-      console.log(`Chunk ${chunkCount}: ${new Date(currentStart).toISOString()} to ${new Date(currentEnd).toISOString()}`);
+      // console.log(`Chunk ${chunkCount}: ${new Date(currentStart).toISOString()} to ${new Date(currentEnd).toISOString()}`);
 
       try {
         const response = await this.infoClient.fundingHistory({
@@ -91,7 +91,7 @@ export class FundingService {
 
         allResults.push(...chunkResults);
         
-        console.log(`  → Retrieved ${chunkResults.length} entries`);
+        // console.log(`  → Retrieved ${chunkResults.length} entries`);
 
         if (currentEnd < endTime) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -106,7 +106,7 @@ export class FundingService {
 
     allResults.sort((a, b) => a.time - b.time);
 
-    console.log(`Total entries retrieved: ${allResults.length} across ${chunkCount} chunks`);
+    // console.log(`Total entries retrieved: ${allResults.length} across ${chunkCount} chunks`);
 
     return allResults;
   }
