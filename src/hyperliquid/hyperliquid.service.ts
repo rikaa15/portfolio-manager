@@ -67,33 +67,6 @@ export class HyperliquidService {
     }));
   }
 
-  findClosestPrice(
-    priceData: Array<{
-      timestamp: Date;
-      open: number;
-      high: number;
-      low: number;
-      close: number;
-      volume: number;
-    }>,
-    targetTime: Date
-  ) {
-    return priceData.reduce((a, b) =>
-      Math.abs(a.timestamp.getTime() - targetTime.getTime()) < 
-      Math.abs(b.timestamp.getTime() - targetTime.getTime()) ? a : b
-    );
-  }
-
-  calculatePnL(
-    entryPrice: number,
-    exitPrice: number,
-    notional: number,
-    isLong: boolean
-  ): number {
-    const priceDiff = isLong ? exitPrice - entryPrice : entryPrice - exitPrice;
-    return (priceDiff / entryPrice) * notional;
-  }
-
   async openPosition({
     coin,
     isLong,

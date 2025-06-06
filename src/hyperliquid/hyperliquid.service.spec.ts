@@ -3,6 +3,23 @@ import { HyperliquidService } from './hyperliquid.service';
 import { ConfigModule } from '@nestjs/config';
 import configuration from '../config/configuration';
 
+function findClosestPrice(
+  priceData: Array<{
+    timestamp: Date;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>,
+  targetTime: Date
+) {
+  return priceData.reduce((a, b) =>
+    Math.abs(a.timestamp.getTime() - targetTime.getTime()) < 
+    Math.abs(b.timestamp.getTime() - targetTime.getTime()) ? a : b
+  );
+}
+
 describe('HyperliquidService', () => {
   let service: HyperliquidService;
 
@@ -41,12 +58,14 @@ describe('HyperliquidService', () => {
 
     const priceData = await service.getHistoricalPrices('BTC', '1d', startTime, endTime);
 
-    const entry = service.findClosestPrice(priceData, entryTime);
+    const entry = findClosestPrice(priceData, entryTime);
     const entryPrice = entry.close;
 
     const results = exitTimes.map(exitTime => {
-      const exit = service.findClosestPrice(priceData, exitTime);
-      const pnl = service.calculatePnL(entryPrice, exit.close, notional, isLong);
+      const exit = findClosestPrice(priceData, exitTime);
+      
+      const priceDiff = isLong ? exit.close - entryPrice : entryPrice - exit.close;
+      const pnl = (priceDiff / entryPrice) * notional;
       
       return {
         exitTime: exit.timestamp,
