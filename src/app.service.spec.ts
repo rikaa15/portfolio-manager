@@ -236,16 +236,33 @@ async function runBacktest(
   endDate: string,
   initialAmount: number,
 ): Promise<void> {
-  logger.log('=== WBTC/USDC LP Backtest ===');
+  logger.log('=== WBTC/USDC LP Backtest with IL Hedging ===');
   logger.log(`Pool: ${poolAddress}`);
   logger.log(`Period: ${startDate} to ${endDate}`);
   logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
   logger.log('');
 
-  const initialFuturesNotional = initialAmount / 2
-  let futuresNotional = initialFuturesNotional
-  let futuresLeverage = 10
-  let futuresDirection = 'short'
+  // Risk management constants
+  const MAX_LEVERAGE = 2;                    // Maximum allowed leverage
+  const MIN_LEVERAGE = 0.5;                  // Minimum allowed leverage
+  const MAX_HEDGE_RATIO = 0.75;              // Maximum hedge to LP value ratio
+  const BASE_HEDGE_RATIO = 0.5;              // Starting hedge ratio (50%)
+  const MAX_FUNDING_RATE = 0.001;            // 0.1% per 8h maximum funding rate
+  const MAX_WEEKLY_FUNDING_COST = 0.2;       // 20% of weekly fees maximum funding cost
+  const MAX_POSITION_ADJUSTMENT = 0.1;        // Maximum 10% position size adjustment per day
+  const LIQUIDATION_BUFFER = 0.85;           // 85% liquidation buffer
+  const MIN_TIME_IN_RANGE = 0.85;            // 85% minimum time in range
+
+  const initialFuturesNotional = initialAmount * BASE_HEDGE_RATIO;
+  let futuresNotional = initialFuturesNotional;
+  let futuresLeverage = 1;                   // Start with 1x leverage
+  let futuresDirection = 'short';            // Start with short to hedge BTC exposure
+  let cumulativeFundingCosts = 0;
+  let timeOutOfRange = 0;
+  let lastRebalanceDay = 0;
+  let weeklyFees = 0;
+  let weeklyFundingCosts = 0;
+  let daysOutOfRange = 0;
 
   try {
     // Get pool information
@@ -269,7 +286,7 @@ async function runBacktest(
     logger.log(`Found ${poolDayData.length} days of data`);
     logger.log('');
 
-    // Fetch finding rates history
+    // Fetch funding rates history
     logger.log(`Fetching funding rates from ${startDate} to ${endDate}...`);
     const hourlyFundingRates = await fundingService.getHistoricalFundingRates(
       'BTC',
@@ -277,17 +294,8 @@ async function runBacktest(
       new Date(endDate).getTime()
     );
     const fundingRates = fundingService.hourlyTo8HourFundingRates(hourlyFundingRates);
-    const sortedRates = [...fundingRates].sort((a, b) => a.fundingRate - b.fundingRate);
-    logger.log(`Found ${fundingRates.length} funding rates. Min value: ${sortedRates[0].fundingRate}, max value: ${sortedRates[sortedRates.length - 1].fundingRate}`);
-
-    // Fetching hyperliquid candles
-    const candles = await hyperliquidService.infoClient.candleSnapshot({
-      coin: 'BTC',
-      interval: '1d',
-      startTime: new Date(startDate).getTime(),
-      endTime: new Date(endDate).getTime(),
-    });
-    logger.log(`Found ${candles.length} candles, ${JSON.stringify(candles[0])}`);
+    logger.log(`Found ${fundingRates.length} funding rate periods`);
+    logger.log('');
 
     // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
@@ -295,111 +303,176 @@ async function runBacktest(
 
     logger.log(`Initial TVL: $${parseFloat(firstDay.tvlUSD).toLocaleString()}`);
     logger.log(`LP Share: ${(lpSharePercentage * 100).toFixed(6)}%`);
+    logger.log(`Initial Futures Hedge: $${initialFuturesNotional.toLocaleString()}`);
     logger.log('');
 
     // Track cumulative values
     let cumulativeFees = 0;
+    let cumulativeIL = 0;
     const initialToken0Price = parseFloat(firstDay.token0Price);
     const initialToken1Price = parseFloat(firstDay.token1Price);
+    let lastToken0Ratio = 0.5; // Start assuming 50/50 split
 
     logger.log('Daily Performance:');
     logger.log('');
 
     // Process each day
-    poolDayData.forEach((dayData, index) => {
-      const dayNumber = index + 1;
+    for (let i = 0; i < poolDayData.length; i++) {
+      const dayData = poolDayData[i];
+      const dayNumber = i + 1;
       const date = formatDate(dayData.date);
 
       // Get nearest funding rate for the day
       const ratesData = fundingRates.find(rate => Math.abs(Math.round(rate.time / 1000) - dayData.date) <= 8 * 60 * 60);
       if (!ratesData) {
         logger.error(`No funding rate found for ${date}`);
-      } else {
-        // logger.log(`Funding rate for ${date}: ${ratesData.fundingRate}`);
+        continue;
       }
 
-      if(ratesData.fundingRate > 0.0005) {
-        // This adjustment helps protect your net returns by limiting funding payments that could otherwise offset LP fee income
-        futuresNotional = futuresNotional - (futuresNotional * 0.05)
-      } else if(ratesData.fundingRate < 0) {
-        futuresNotional = futuresNotional + (futuresNotional * 0.1)
-      }
-
-      // Calculate daily fee earnings
-      const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
-      cumulativeFees += dailyFees;
-
-      // Calculate current position value
+      // Calculate current position value and token ratios
       const currentTVL = parseFloat(dayData.tvlUSD);
       const currentPositionValue = currentTVL * lpSharePercentage;
-
-      // Calculate impermanent loss
       const currentToken0Price = parseFloat(dayData.token0Price);
       const currentToken1Price = parseFloat(dayData.token1Price);
+      
+      // Calculate token ratios for rebalancing
+      const token0Value = currentPositionValue * 0.5;
+      const token0Ratio = token0Value / currentPositionValue;
+      const ratioChange = Math.abs(token0Ratio - 0.5); // Deviation from 50/50
+
+      // Calculate impermanent loss
       const impermanentLoss = calculateImpermanentLoss(
         currentToken0Price,
         currentToken1Price,
         initialToken0Price,
         initialToken1Price,
       );
+      cumulativeIL += impermanentLoss;
 
-      // Calculate total PnL
+      // Check if price is out of range
+      if (Math.abs(impermanentLoss) > 5) {
+        daysOutOfRange++;
+        if (daysOutOfRange >= 1) { // 24 hours out of range
+          timeOutOfRange++;
+        }
+      } else {
+        daysOutOfRange = 0;
+      }
+
+      // Calculate daily fee earnings
+      const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
+      weeklyFees += dailyFees;
+      cumulativeFees += dailyFees;
+
+      // Calculate funding costs
+      const dailyFundingCost = (futuresNotional * futuresLeverage) * ratesData.fundingRate;
+      weeklyFundingCosts += dailyFundingCost;
+      cumulativeFundingCosts += dailyFundingCost;
+
+      // Weekly reset of fee and funding tracking
+      if (dayNumber % 7 === 0) {
+        // Check if funding costs exceed threshold
+        if (weeklyFundingCosts > weeklyFees * MAX_WEEKLY_FUNDING_COST) {
+          // Reduce position size and leverage
+          futuresNotional *= 0.8;
+          futuresLeverage = Math.max(MIN_LEVERAGE, futuresLeverage * 0.8);
+        }
+        weeklyFees = 0;
+        weeklyFundingCosts = 0;
+      }
+
+      // Adjust hedge based on conditions
+      if (Math.abs(impermanentLoss) > 1 || ratioChange > 0.05) {
+        const adjustmentFactor = Math.min(
+          Math.abs(impermanentLoss) / 100,
+          MAX_POSITION_ADJUSTMENT
+        );
+
+        // Calculate new hedge size
+        let newHedgeSize = futuresNotional;
+        if (impermanentLoss < 0) {
+          newHedgeSize *= (1 + adjustmentFactor);
+          futuresLeverage = Math.min(futuresLeverage * 1.1, MAX_LEVERAGE);
+        } else {
+          newHedgeSize *= (1 - adjustmentFactor);
+          futuresLeverage = Math.max(futuresLeverage * 0.9, MIN_LEVERAGE);
+        }
+
+        // Apply hedge size limits
+        const maxHedgeSize = currentPositionValue * MAX_HEDGE_RATIO;
+        futuresNotional = Math.min(newHedgeSize, maxHedgeSize);
+        lastRebalanceDay = dayNumber;
+      }
+
+      // Adjust position based on funding rates
+      if (ratesData.fundingRate > MAX_FUNDING_RATE) {
+        futuresNotional *= 0.95; // Reduce exposure when funding is expensive
+      } else if (ratesData.fundingRate < 0) {
+        const maxIncrease = currentPositionValue * MAX_HEDGE_RATIO - futuresNotional;
+        futuresNotional = Math.min(futuresNotional * 1.05, futuresNotional + maxIncrease);
+      }
+
+      // Calculate total PnL including hedge
       const positionPnL = currentPositionValue - initialAmount;
-      const totalPnL = positionPnL + cumulativeFees;
+      const hedgePnL = futuresDirection === 'short' ? 
+        initialToken0Price - currentToken0Price : 
+        currentToken0Price - initialToken0Price;
+      const hedgeValue = (futuresNotional * futuresLeverage * hedgePnL / initialToken0Price);
+      const totalPnL = positionPnL + cumulativeFees - cumulativeFundingCosts + hedgeValue;
 
-      // Calculate running APR based on fees only
-      const daysElapsed = dayNumber;
-      const runningAPR =
-        (cumulativeFees / initialAmount) * (365 / daysElapsed) * 100;
+      // Calculate running APR
+      const runningAPR = ((cumulativeFees - cumulativeFundingCosts) / initialAmount) * (365 / dayNumber) * 100;
 
-      // Clean output: Position Value, IL, PnL, APR
+      // Output daily performance
       logger.log(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
-          `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
-          `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-          `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(1)}%`,
+        `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
+        `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
+        `Hedge: $${(futuresNotional * futuresLeverage).toLocaleString()} (${futuresLeverage.toFixed(1)}x) | ` +
+        `Funding: -$${dailyFundingCost.toFixed(2)} | ` +
+        `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
+        `APR: ${runningAPR.toFixed(1)}%`
       );
-    });
 
-    // Final summary
+      // Check risk limits
+      if (futuresLeverage * futuresNotional / currentPositionValue > LIQUIDATION_BUFFER) {
+        logger.log(`WARNING: Position approaching liquidation buffer on day ${dayNumber}`);
+        futuresLeverage = Math.max(MIN_LEVERAGE, futuresLeverage * 0.7);
+      }
+
+      lastToken0Ratio = token0Ratio;
+    }
+
+    // Final summary calculations
     const lastDay = poolDayData[poolDayData.length - 1];
     const finalPositionValue = parseFloat(lastDay.tvlUSD) * lpSharePercentage;
-    const totalReturn =
-      ((finalPositionValue + cumulativeFees - initialAmount) / initialAmount) *
-      100;
-    const finalAPR =
-      (cumulativeFees / initialAmount) * (365 / poolDayData.length) * 100;
+    const daysInRange = poolDayData.length - timeOutOfRange;
+    const timeInRangePercent = (daysInRange / poolDayData.length) * 100;
+    
+    const totalReturn = ((finalPositionValue + cumulativeFees - cumulativeFundingCosts - initialAmount) / initialAmount) * 100;
+    const finalAPR = ((cumulativeFees - cumulativeFundingCosts) / initialAmount) * (365 / poolDayData.length) * 100;
+    const weeklyFeeYield = (cumulativeFees / poolDayData.length * 7 / initialAmount) * 100;
 
     logger.log('');
-    logger.log('=== LP Summary ===');
-    logger.log(`Initial LP value: $${initialAmount.toLocaleString()}`);
-    logger.log(`Final Position Value: $${finalPositionValue.toLocaleString()}`);
+    logger.log('=== Strategy Summary ===');
+    logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
+    logger.log(`Final LP Value: $${finalPositionValue.toLocaleString()}`);
     logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
-    logger.log(
-      `Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`,
-    );
-    logger.log(`Annualized APR (Fees Only): ${finalAPR.toFixed(2)}%`);
+    logger.log(`Total Funding Costs: $${cumulativeFundingCosts.toLocaleString()}`);
+    logger.log(`Net Fees: $${(cumulativeFees - cumulativeFundingCosts).toLocaleString()}`);
+    logger.log(`Time in Range: ${timeInRangePercent.toFixed(1)}%`);
+    logger.log(`Weekly Fee Yield: ${weeklyFeeYield.toFixed(2)}%`);
+    logger.log(`Final Hedge Size: $${(futuresNotional * futuresLeverage).toLocaleString()}`);
+    logger.log(`Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`);
+    logger.log(`Annualized APR (Net): ${finalAPR.toFixed(2)}%`);
 
-    // Calculate futures PnL
-    const candleData = candles.map((c: any) => ({
-      ts: new Date(Number(c.T)),
-      close: parseFloat(c.c),
-    }));
-    const entryPrice = candleData[0].close;
-    const exitPrice = candleData[candleData.length - 1].close;
-    const priceDiff = futuresDirection === 'long' ? exitPrice - entryPrice : entryPrice - exitPrice;
-    const futuresPnL = (priceDiff / entryPrice) * futuresNotional * futuresLeverage;
-    const futuresReturn = (futuresPnL / initialFuturesNotional) * 100;
-    const futuresAPR = (futuresReturn / poolDayData.length) * 365;
-
+    // Check KPI compliance
     logger.log('');
-    logger.log('=== Futures Summary ===');
-    logger.log(`Initial futures notional: $${initialFuturesNotional.toLocaleString()}`);
-    logger.log(`Futures Notional: $${futuresNotional.toLocaleString()}`);
-    logger.log(`Futures PnL: $${futuresPnL.toLocaleString()}`);
-    logger.log(`Futures Return: ${futuresReturn >= 0 ? '+' : ''}${futuresReturn.toFixed(2)}%`);
-    logger.log(`Futures Annualized APR: ${futuresAPR.toFixed(2)}%`);
+    logger.log('=== KPI Compliance ===');
+    logger.log(`✓ Weekly Fee Yield Target (≥0.30%): ${weeklyFeeYield >= 0.30 ? 'Met' : 'Not Met'} (${weeklyFeeYield.toFixed(2)}%)`);
+    logger.log(`✓ Time in Range Target (≥85%): ${timeInRangePercent >= 85 ? 'Met' : 'Not Met'} (${timeInRangePercent.toFixed(1)}%)`);
+    logger.log(`✓ Annual Return Target (≥15%): ${finalAPR >= 15 ? 'Met' : 'Not Met'} (${finalAPR.toFixed(2)}%)`);
+
   } catch (error: any) {
     if (error.message) {
       logger.error('Backtest failed: ' + error.message);
@@ -494,7 +567,7 @@ describe('AppService', () => {
         hyperliquidService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2024-08-30', // End date (today)
+        '2025-05-30', // End date (today)
         INITIAL_INVESTMENT,
       );
   
