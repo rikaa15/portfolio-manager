@@ -11,7 +11,7 @@ import {
 } from './types';
 import configuration, { Config } from '../config/configuration';
 import { getPoolPriceHistory } from './uniswap-lp.utils';
-import { fetchCurrentPoolData, fetchPoolInfo } from './subgraph.client';
+// import { fetchCurrentPoolData, fetchPoolInfo } from './subgraph.client';
 import {
   ERC20_ABI,
   fetchPoolInfoDirect,
@@ -151,9 +151,13 @@ export class UniswapLpService {
     try {
       const targetPoolAddress = poolAddress || this.uniswapConfig.poolAddress;
 
-      const poolInfo = this.uniswapConfig.hasSubgraph
-        ? await fetchPoolInfo(targetPoolAddress)
-        : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
+      const poolInfo = await fetchPoolInfoDirect(
+        targetPoolAddress,
+        this.provider,
+      );
+      // this.uniswapConfig.hasSubgraph
+      //   ? await fetchPoolInfo(targetPoolAddress)
+      //   : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
 
       const contract = new ethers.Contract(
         this.uniswapPositionManagerAddress,
@@ -384,9 +388,13 @@ export class UniswapLpService {
       this.logger.log(`Getting pool price for ${targetPoolAddress}`);
 
       // Use the same hybrid approach as getEarnedFees
-      const poolData = this.uniswapConfig.hasSubgraph
-        ? await fetchCurrentPoolData(targetPoolAddress)
-        : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
+      const poolData = await fetchPoolInfoDirect(
+        targetPoolAddress,
+        this.provider,
+      );
+      //  this.uniswapConfig.hasSubgraph
+      //   ? await fetchCurrentPoolData(targetPoolAddress)
+      //   : await fetchPoolInfoDirect(targetPoolAddress, this.provider);
 
       const token0Price = parseFloat(poolData.token0Price); // token0 per token1
       const token1Price = parseFloat(poolData.token1Price); // token1 per token0

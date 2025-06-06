@@ -8,7 +8,7 @@ import { UNISWAP_CONFIGS, UniswapNetworkName } from './uniswap.config';
 import configuration from '../config/configuration';
 import { MAX_UINT_128 } from './contract.client';
 
-const TEST_NETWORK: UniswapNetworkName = 'sepolia'; // Switch to 'ethereum' for mainnet tests
+const TEST_NETWORK: UniswapNetworkName = 'sepolia'; // 'sepolia'; // Switch to 'ethereum' for mainnet tests
 
 const UNISWAP_CONFIG = UNISWAP_CONFIGS[TEST_NETWORK];
 

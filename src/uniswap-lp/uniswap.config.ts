@@ -25,7 +25,7 @@ export interface UniswapNetworkConfig {
 export const UNISWAP_CONFIGS = {
   ethereum: {
     chainId: 1,
-    poolAddress: '0x99ac8cA7087fA4A2A1FB6357969965A2014ABc35',
+    poolAddress: '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35',
     factoryAddress: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
     hasSubgraph: true,
     subgraphUrl: '',
