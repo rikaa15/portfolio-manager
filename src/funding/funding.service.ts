@@ -1,6 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import * as hl from '@nktkas/hyperliquid';
 
+type FundingRateHistoryItem = {
+  coin: string;
+  fundingRate: number;
+  premium: number;
+  time: number;
+}
+
 @Injectable()
 export class FundingService {
   private readonly transport = new hl.HttpTransport();
@@ -94,7 +101,7 @@ export class FundingService {
         // console.log(`  → Retrieved ${chunkResults.length} entries`);
 
         if (currentEnd < endTime) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // await new Promise(resolve => setTimeout(resolve, 100));
         }
 
       } catch (error) {
@@ -109,5 +116,31 @@ export class FundingService {
     // console.log(`Total entries retrieved: ${allResults.length} across ${chunkCount} chunks`);
 
     return allResults;
+  }
+
+  public hourlyTo8HourFundingRates(hourlyRates: FundingRateHistoryItem[]) {
+    const eightHourRates: FundingRateHistoryItem[] = [];
+    
+    for (let i = 0; i < hourlyRates.length; i += 8) {
+        const period = hourlyRates.slice(i, i + 8);
+        
+        // Skip empty periods
+        if (period.length === 0) continue;
+        
+        // Sum funding rates for the 8-hour period
+        const fundingRateSum = period.reduce((sum, item) => sum + item.fundingRate, 0);
+        
+        // Use the first item's coin, premium, and time for the period
+        const firstItem = period[0];
+        
+        eightHourRates.push({
+            coin: firstItem.coin,
+            fundingRate: fundingRateSum,
+            premium: firstItem.premium,
+            time: firstItem.time
+        });
+    }
+    
+    return eightHourRates;
   }
 }

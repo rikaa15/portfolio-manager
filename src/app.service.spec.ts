@@ -264,12 +264,17 @@ async function runBacktest(
 
     // Fetch finding rates history
     logger.log(`Fetching funding rates from ${startDate} to ${endDate}...`);
-    const fundingRates = await fundingService.getHistoricalFundingRates(
+    const hourlyFundingRates = await fundingService.getHistoricalFundingRates(
       'BTC',
       new Date(startDate).getTime(),
       new Date(endDate).getTime()
     );
-    logger.log(`Found ${fundingRates.length} funding rates. First value: ${fundingRates[0].fundingRate}, time: ${fundingRates[0].time}`);
+    const fundingRates = fundingService.hourlyTo8HourFundingRates(hourlyFundingRates);
+    const sortedRates = [...fundingRates].sort((a, b) => a.fundingRate - b.fundingRate);
+    logger.log(`Found ${fundingRates.length} funding rates. Min value: ${sortedRates[0].fundingRate}, max value: ${sortedRates[sortedRates.length - 1].fundingRate}`);
+
+
+    console.log('fundingRates', fundingRates[0].time, fundingRates[1].time)
 
     // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
@@ -295,11 +300,12 @@ async function runBacktest(
       // Get nearest funding rate for the day
       const fundingRate = fundingRates.find(rate => Math.abs(Math.round(rate.time / 1000) - dayData.date) < 8 * 60 * 60);
       if (!fundingRate) {
-        logger.log(`No funding rate found for ${date}`);
-      } else {
-        // logger.log(`Funding rate for ${date}: ${fundingRate.fundingRate}, funding time: ${fundingRate.time}`);
+        throw new Error(`No funding rate found for ${date}`);
       }
-      
+
+      if(fundingRate.fundingRate > 0.001) {
+        throw new Error(`Funding rate for ${date} is too high: ${fundingRate.fundingRate}`);
+      }
 
       // Calculate daily fee earnings
       const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
@@ -455,7 +461,7 @@ describe('AppService', () => {
         fundingService,
         POOL_ADDRESS,
         '2024-05-29', // Start date (1 year ago)
-        '2024-05-31', // End date (today)
+        '2025-05-30', // End date (today)
         INITIAL_INVESTMENT,
       );
   
