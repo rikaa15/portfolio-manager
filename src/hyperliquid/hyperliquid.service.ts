@@ -28,27 +28,28 @@ export class HyperliquidService {
     this.logger.log('HyperliquidService bootstrap completed');
   }
 
-  async backtest({
-    coin,
-    interval,
-    entryTime,
-    exitTimes,
-    collateral,
-    leverage,
-    isLong,
-  }: {
-    coin: string;
-    interval: "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "8h" | "12h" | "1d" | "3d" | "1w" | "1M";
-    entryTime: Date;
-    exitTimes: Date[];
-    collateral: number;
-    leverage: number;
-    isLong: boolean;
-  }) {
-    const notional = collateral * leverage;
-    const startTime = entryTime.getTime();
-    const endTime = Math.max(...exitTimes.map(t => t.getTime()));
 
+  async getCurrentPrice(coin: string): Promise<number> {
+    const mids = await this.infoClient.allMids();
+    const price = mids[coin];
+    if (!price) throw new Error(`Price not found for ${coin}`);
+    
+    return parseFloat(price);
+  }
+
+  async getHistoricalPrices(
+    coin: string,
+    interval: "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "8h" | "12h" | "1d" | "3d" | "1w" | "1M",
+    startTime: number,
+    endTime: number
+  ): Promise<Array<{
+    timestamp: Date;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>> {
     const candles = await this.infoClient.candleSnapshot({
       coin,
       interval,
@@ -56,36 +57,14 @@ export class HyperliquidService {
       endTime,
     });
 
-    const candleData = candles.map((c: any) => ({
-      ts: new Date(Number(c.T)),
+    return candles.map((c: any) => ({
+      timestamp: new Date(Number(c.T)),
+      open: parseFloat(c.o),
+      high: parseFloat(c.h),
+      low: parseFloat(c.l),
       close: parseFloat(c.c),
+      volume: parseFloat(c.v),
     }));
-
-    const findClosest = (target: Date) =>
-      candleData.reduce((a, b) =>
-        Math.abs(a.ts.getTime() - target.getTime()) < Math.abs(b.ts.getTime() - target.getTime()) ? a : b
-      );
-
-    const entry = findClosest(entryTime);
-    const entryPrice = entry.close;
-
-    const results = exitTimes.map(t => {
-      const exit = findClosest(t);
-      const exitPrice = exit.close;
-      const priceDiff = isLong ? exitPrice - entryPrice : entryPrice - exitPrice;
-      const pnl = (priceDiff / entryPrice) * notional;
-      return {
-        exitTime: exit.ts,
-        exitPrice,
-        pnl,
-      };
-    });
-
-    return {
-      entryTime: entry.ts,
-      entryPrice,
-      results,
-    };
   }
 
   async openPosition({
@@ -185,5 +164,4 @@ export class HyperliquidService {
   
     return await this.exchangeClient.order(order);
   }
-  
 }
