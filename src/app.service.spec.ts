@@ -70,6 +70,9 @@ async function runBacktest(
   let weeklyFees = 0;
   let weeklyFundingCosts = 0;
   let daysOutOfRange = 0;
+  let cumulativeHedgePnL = 0;
+  let cumulativeLpPnL = 0;
+  let previousHedgeValue = 0;
 
   try {
     // Get pool information
@@ -224,11 +227,23 @@ async function runBacktest(
 
       // Calculate total PnL including hedge
       const positionPnL = currentPositionValue - initialAmount;
-      const hedgePnL = futuresDirection === 'short' ? 
-        initialToken0Price - currentToken0Price : 
-        currentToken0Price - initialToken0Price;
-      const hedgeValue = (futuresNotional * futuresLeverage * hedgePnL / initialToken0Price);
-      const totalPnL = positionPnL + cumulativeFees - cumulativeFundingCosts + hedgeValue;
+      
+      // Calculate hedge PnL based on price change and position size
+      const hedgeNotional = futuresNotional * futuresLeverage;
+      const priceChange = (currentToken0Price - initialToken0Price) / initialToken0Price;
+      const hedgeValue = futuresDirection === 'short' ? 
+        -hedgeNotional * priceChange : // Short position profits when price falls
+        hedgeNotional * priceChange;   // Long position profits when price rises
+      
+      // Calculate daily hedge PnL
+      const dailyHedgePnL = hedgeValue - previousHedgeValue;
+      previousHedgeValue = hedgeValue;
+      cumulativeHedgePnL += dailyHedgePnL;
+      
+      // Calculate LP PnL (position value change + fees)
+      cumulativeLpPnL = positionPnL + cumulativeFees;
+      
+      const totalPnL = cumulativeLpPnL + cumulativeHedgePnL - cumulativeFundingCosts;
 
       // Calculate running APR
       const runningAPR = ((cumulativeFees - cumulativeFundingCosts) / initialAmount) * (365 / dayNumber) * 100;
@@ -238,7 +253,8 @@ async function runBacktest(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
         `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
         `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-        `Hedge: $${(futuresNotional * futuresLeverage).toLocaleString()} (${futuresLeverage.toFixed(1)}x) | ` +
+        `Hedge: $${hedgeNotional.toLocaleString()} (${futuresLeverage.toFixed(1)}x) | ` +
+        `Daily Hedge PnL: ${dailyHedgePnL >= 0 ? '+' : ''}$${dailyHedgePnL.toFixed(2)} | ` +
         `Funding: -$${dailyFundingCost.toFixed(2)} | ` +
         `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
         `APR: ${runningAPR.toFixed(1)}%`
@@ -267,6 +283,8 @@ async function runBacktest(
     logger.log('=== Strategy Summary ===');
     logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
     logger.log(`Final LP Value: $${finalPositionValue.toLocaleString()}`);
+    logger.log(`LP Position PnL: ${cumulativeLpPnL >= 0 ? '+' : ''}$${cumulativeLpPnL.toLocaleString()}`);
+    logger.log(`Hedge Position PnL: ${cumulativeHedgePnL >= 0 ? '+' : ''}$${cumulativeHedgePnL.toLocaleString()}`);
     logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
     logger.log(`Total Funding Costs: $${cumulativeFundingCosts.toLocaleString()}`);
     logger.log(`Net Fees: $${(cumulativeFees - cumulativeFundingCosts).toLocaleString()}`);
