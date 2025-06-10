@@ -123,7 +123,7 @@ export class UniswapLpService {
 
       // Only call position check on mainnet
       if (this.currentNetwork === 'ethereum') {
-        await this.getWbtcUsdcPosition();
+        // await this.getWbtcUsdcPosition('1006358');
       } else {
         this.logger.log(
           `Skipping position check for ${this.currentNetwork} network`,
@@ -514,7 +514,7 @@ export class UniswapLpService {
     this.logger.log('Bulk approval setup complete');
   }
 
-  async getWbtcUsdcPosition(tokenId: string = '999399'): Promise<void> {
+  async getWbtcUsdcPosition(tokenId: string): Promise<void> {
     const token0Symbol = this.uniswapConfig.tokens.token0.symbol;
     const token1Symbol = this.uniswapConfig.tokens.token1.symbol;
 
