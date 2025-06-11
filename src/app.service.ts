@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { Config } from './config/configuration';
 import { ethers } from 'ethers';
 import { FundingService } from './funding/funding.service';
+import * as moment from 'moment';
 
 @Injectable()
 export class AppService {
@@ -74,6 +75,22 @@ export class AppService {
       // Get current position state
       const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
       console.log('position:', position);
+
+      // TODO: get from subgraph / api
+      const positionStartDate = '2025-06-10';
+      const positionEndDate = moment().format('YYYY-MM-DD');
+      const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
+      this.logger.log(`Pool price history: ${poolPriceHistory.length} days`);
+      if(poolPriceHistory.length === 0) {
+        this.logger.error('No pool price history found');
+        return;
+      }
+      const initialPrice = poolPriceHistory[0].token0Price;
+      const finalPrice = poolPriceHistory[poolPriceHistory.length - 1].token0Price;
+
+      // Calculate impermanent loss
+      const impermanentLoss = this.calculateImpermanentLoss(finalPrice, initialPrice);
+      this.logger.log(`Impermanent loss: ${impermanentLoss}%`);
   
       // Get current pool price
       const poolPrice = await this.uniswapLpService.getPoolPrice();
@@ -100,6 +117,7 @@ export class AppService {
 
       // Check if position is in range
       const inRange = currentPrice >= lowerPrice && currentPrice <= upperPrice;
+      console.log('inRange:', inRange);
       
       if (!inRange) {
         if (!this.outOfRangeStartTime) {
@@ -114,28 +132,14 @@ export class AppService {
       }
 
       // Check if fees need to be collected
-      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));
-      const token0Fees = earnedFees.token0Fees;
-      console.log('token0Fees:', token0Fees);
-  
-      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals);
-      console.log('btcFees:', btcFees);
-      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals);
-      console.log('usdcFees:', usdcFees);
-      if (usdcFees >= this.FEE_COLLECTION_THRESHOLD) {
-        await this.collectFees();
-        this.weeklyFees += Number(ethers.formatUnits(usdcFees, 6));
-      }
-
-      // Calculate impermanent loss
-      const impermanentLoss = this.calculateImpermanentLoss(
-        currentPrice,
-        1, // USDC price
-        this.initialTokenPrices.token0,
-        this.initialTokenPrices.token1
-      );
-
-      this.logger.log(`impermanentLoss: ${impermanentLoss}`);
+      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
+      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
+      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // usdc
+      this.logger.log(`${earnedFees.token0Symbol} fees: ${btcFees}, ${earnedFees.token1Symbol} fees: ${usdcFees}`);
+      // if (token1Fees >= this.FEE_COLLECTION_THRESHOLD) {
+      //   await this.collectFees();
+      //   this.weeklyFees += Number(ethers.formatUnits(usdcFees, 6));
+      // }
 
       // Calculate token ratios for rebalancing
       const wbtcValue = wbtcAmount * currentPrice;
@@ -265,30 +269,22 @@ export class AppService {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }
   }
-
+  
   private calculateImpermanentLoss(
     currentToken0Price: number,
-    currentToken1Price: number,
     initialToken0Price: number,
-    initialToken1Price: number,
   ): number {
-    // Price ratio: relative change between token0 and token1 prices
-    const priceRatio =
-      currentToken0Price /
-      initialToken0Price /
-      (currentToken1Price / initialToken1Price);
-
-    // Square root from constant product formula (x * y = k) used in AMMs
+    // For WBTC/USDC pair, we only care about BTC price changes since USDC is pegged to $1
+    const priceRatio = currentToken0Price / initialToken0Price;
+    
+    // Calculate IL using the standard formula for price change of one asset
+    // IL = 2 * sqrt(priceRatio) / (1 + priceRatio) - 1
     const sqrtPriceRatio = Math.sqrt(priceRatio);
-
-    // LP value formula: accounts for automatic rebalancing in AMM pools
     const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
-
-    // Holding value normalized to 1 (100% baseline)
     const holdValue = 1;
 
-    // Impermanent loss: LP performance vs holding 50/50 portfolio
-    return (lpValue - holdValue) * 100; // Convert to percentage
+    // Convert to percentage
+    return (lpValue - holdValue) * 100;
   }
 
   private async collectFees() {

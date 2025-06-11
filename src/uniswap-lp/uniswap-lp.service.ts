@@ -426,10 +426,10 @@ export class UniswapLpService {
   }
 
   async getPoolPriceHistory(
-    poolAddress: string,
     startDate: string,
     endDate: string,
     interval: 'daily' | 'hourly' = 'daily',
+    poolAddress = this.uniswapConfig.poolAddress,
   ): Promise<
     Array<{
       timestamp: number;
