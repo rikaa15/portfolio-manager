@@ -95,7 +95,6 @@ export class AppService {
 
       // Calculate impermanent loss
       const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
-      this.logger.log(`Impermanent loss: ${impermanentLoss}%`);
   
       // Get current pool price
       // const poolPrice = await this.uniswapLpService.getPoolPrice();
@@ -104,8 +103,8 @@ export class AppService {
       // console.log('currentPrice:', currentPrice);
 
       // Calculate position metrics
-      const wbtcAmount = Number(ethers.formatUnits(position.token0Balance, 8));
-      const usdcAmount = Number(ethers.formatUnits(position.token1Balance, 6));
+      const wbtcAmount = Number(ethers.formatUnits(position.token0Balance, position.token0.decimals));
+      const usdcAmount = Number(ethers.formatUnits(position.token1Balance, position.token1.decimals));
       const positionValue = wbtcAmount * currentPrice + usdcAmount;
       
       // Calculate price range based on current price
@@ -114,7 +113,6 @@ export class AppService {
 
       // Check if position is in range
       const inRange = currentPrice >= lowerPrice && currentPrice <= upperPrice;
-      console.log('inRange:', inRange);
       
       if (!inRange) {
         if (!this.outOfRangeStartTime) {
@@ -132,7 +130,6 @@ export class AppService {
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
       const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
       const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // usdc
-      this.logger.log(`${earnedFees.token0Symbol} fees: ${btcFees}, ${earnedFees.token1Symbol} fees: ${usdcFees}`);
       // if (token1Fees >= this.FEE_COLLECTION_THRESHOLD) {
       //   await this.collectFees();
       //   this.weeklyFees += Number(ethers.formatUnits(usdcFees, 6));
@@ -146,7 +143,6 @@ export class AppService {
       // Get current funding rate
       const fundingData = await this.fundingService.getCurrentFundingRate('BTC');
       const currentFundingRate = fundingData.fundingRate;
-      this.logger.log('currentFundingRate', currentFundingRate);
 
       // Calculate target hedge size based on position value and price position in range
       const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
@@ -185,25 +181,9 @@ export class AppService {
           // Apply hedge size limits
           const maxHedgeSize = positionValue * this.MAX_HEDGE_RATIO;
           const finalHedgeSize = Math.min(newHedgeSize, maxHedgeSize);
+          console.log('finalHedgeSize:', finalHedgeSize);
 
-          // Get gas price
-          const rpcUrl = this.configService.get('ethereum.rpcUrl', { infer: true });
-          const provider = new ethers.JsonRpcProvider(rpcUrl);
-          const gasPrice = await provider.getFeeData();
-          const gasPriceInUSD = Number(ethers.formatUnits(gasPrice.gasPrice, 'gwei')) * 0.00005;
-
-          if (gasPriceInUSD <= this.GAS_THRESHOLD) {
-            // Adjust Hyperliquid hedge position
-            await this.hyperliquidService.openPosition({
-              coin: 'BTC',
-              isLong: false, // Short position to hedge
-              leverage: this.currentHedgeLeverage,
-              collateral: finalHedgeSize / this.currentHedgeLeverage,
-            });
-            this.lastHedgeRebalance = Date.now();
-          } else {
-            this.logger.warn(`Skipping rebalance due to high gas price: $${gasPriceInUSD}`);
-          }
+          this.lastHedgeRebalance = Date.now();
         }
       }
 
@@ -235,6 +215,22 @@ export class AppService {
         this.lastWeekReset = Date.now();
       }
 
+      // Log position metrics
+      this.logger.log(`Position Metrics:
+        WBTC Amount: ${wbtcAmount}, fees: ${ethers.formatUnits(btcFees, position.token0.decimals)}
+        USDC Amount: ${usdcAmount}, fees: ${ethers.formatUnits(usdcFees, position.token1.decimals)}
+        Position Value: $${positionValue.toFixed(2)}
+        Price Range: $${lowerPrice.toFixed(2)} - $${upperPrice.toFixed(2)}
+        Initial WBTC Price: $${initialPrice}
+        Current WBTC Price: $${currentPrice}
+        Impermanent Loss: ${impermanentLoss}%
+        Target Hedge Size: $${targetHedgeSize.toFixed(2)}
+        Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
+        Weekly Fees: $${this.weeklyFees.toFixed(2)}
+        Weekly Funding Costs: $${this.weeklyFundingCosts.toFixed(2)}
+        Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
+      `);
+
       // Check liquidation risk
       const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeSize / positionValue;
       if (hedgeMarginUsage > this.LIQUIDATION_BUFFER) {
@@ -247,20 +243,6 @@ export class AppService {
           collateral: targetHedgeSize / this.currentHedgeLeverage,
         });
       }
-
-      // Log position metrics
-      this.logger.log('Position Metrics:');
-      this.logger.log(`WBTC Amount: ${wbtcAmount}`);
-      this.logger.log(`USDC Amount: ${usdcAmount}`);
-      this.logger.log(`Position Value: $${positionValue.toFixed(2)}`);
-      this.logger.log(`Current Price: $${currentPrice.toFixed(2)}`);
-      this.logger.log(`Price Range: $${lowerPrice.toFixed(2)} - $${upperPrice.toFixed(2)}`);
-      this.logger.log(`Impermanent Loss: ${impermanentLoss.toFixed(2)}%`);
-      this.logger.log(`Target Hedge Size: $${targetHedgeSize.toFixed(2)}`);
-      this.logger.log(`Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x`);
-      this.logger.log(`Weekly Fees: $${this.weeklyFees.toFixed(2)}`);
-      this.logger.log(`Weekly Funding Costs: $${this.weeklyFundingCosts.toFixed(2)}`);
-      this.logger.log(`Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%`);
 
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
