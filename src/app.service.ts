@@ -74,10 +74,12 @@ export class AppService {
       // Get current position state
       const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
       console.log('position:', position);
-      
+  
       // Get current pool price
       const poolPrice = await this.uniswapLpService.getPoolPrice();
+      console.log('poolPrice:', poolPrice);
       const currentPrice = poolPrice.token0ToToken1Rate;
+      console.log('currentPrice:', currentPrice);
 
       // Store initial token prices if not set
       if (!this.initialTokenPrices) {
@@ -112,7 +114,14 @@ export class AppService {
       }
 
       // Check if fees need to be collected
-      const usdcFees = ethers.getBigInt(position.token1Balance);
+      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));
+      const token0Fees = earnedFees.token0Fees;
+      console.log('token0Fees:', token0Fees);
+  
+      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals);
+      console.log('btcFees:', btcFees);
+      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals);
+      console.log('usdcFees:', usdcFees);
       if (usdcFees >= this.FEE_COLLECTION_THRESHOLD) {
         await this.collectFees();
         this.weeklyFees += Number(ethers.formatUnits(usdcFees, 6));
@@ -126,7 +135,7 @@ export class AppService {
         this.initialTokenPrices.token1
       );
 
-      this.logger.log('impermanentLoss', impermanentLoss);
+      this.logger.log(`impermanentLoss: ${impermanentLoss}`);
 
       // Calculate token ratios for rebalancing
       const wbtcValue = wbtcAmount * currentPrice;
