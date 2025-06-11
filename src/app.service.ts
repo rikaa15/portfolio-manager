@@ -41,7 +41,6 @@ export class AppService {
   private lastHedgeValue = 0;
   private lastHedgeRebalance = Date.now();
   private currentHedgeLeverage = 1;
-  private initialTokenPrices: { token0: number; token1: number } | null = null;
 
   constructor(
     private readonly uniswapLpService: UniswapLpService,
@@ -80,31 +79,29 @@ export class AppService {
       const positionStartDate = '2025-06-10';
       const positionEndDate = moment().format('YYYY-MM-DD');
       const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
-      this.logger.log(`Pool price history: ${poolPriceHistory.length} days`);
       if(poolPriceHistory.length === 0) {
         this.logger.error('No pool price history found');
         return;
       }
-      const initialPrice = poolPriceHistory[0].token0Price;
-      const finalPrice = poolPriceHistory[poolPriceHistory.length - 1].token0Price;
+      const initialPrice = poolPriceHistory[0].token1Price;
+      const currentPrice = poolPriceHistory[poolPriceHistory.length - 1].token1Price;
+      this.logger.log(`Pool price history: ${
+        poolPriceHistory.length
+      } days, initial BTC price: ${
+        initialPrice
+      }, current price: ${
+        currentPrice
+      }`);
 
       // Calculate impermanent loss
-      const impermanentLoss = this.calculateImpermanentLoss(finalPrice, initialPrice);
+      const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
       this.logger.log(`Impermanent loss: ${impermanentLoss}%`);
   
       // Get current pool price
-      const poolPrice = await this.uniswapLpService.getPoolPrice();
-      console.log('poolPrice:', poolPrice);
-      const currentPrice = poolPrice.token0ToToken1Rate;
-      console.log('currentPrice:', currentPrice);
-
-      // Store initial token prices if not set
-      if (!this.initialTokenPrices) {
-        this.initialTokenPrices = {
-          token0: currentPrice,
-          token1: 1, // USDC price is pegged to 1
-        };
-      }
+      // const poolPrice = await this.uniswapLpService.getPoolPrice();
+      // console.log('poolPrice:', poolPrice);
+      // const currentPrice = poolPrice.token0ToToken1Rate;
+      // console.log('currentPrice:', currentPrice);
 
       // Calculate position metrics
       const wbtcAmount = Number(ethers.formatUnits(position.token0Balance, 8));
@@ -327,7 +324,6 @@ export class AppService {
       this.weeklyFundingCosts = 0;
       this.consecutiveHighFundingDays = 0;
       this.outOfRangeStartTime = null;
-      this.initialTokenPrices = null;
 
       this.logger.log('Successfully exited position');
     } catch (error) {
