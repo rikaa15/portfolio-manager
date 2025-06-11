@@ -231,6 +231,10 @@ export class AppService {
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
       `);
 
+      // Check current hedge position
+      const positionData = await this.hyperliquidService.getUserPosition('BTC');
+      this.logger.log(`Current hedge position: ${JSON.stringify(positionData)}`);
+
       // Check liquidation risk
       const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeSize / positionValue;
       if (hedgeMarginUsage > this.LIQUIDATION_BUFFER) {
@@ -243,7 +247,6 @@ export class AppService {
           collateral: targetHedgeSize / this.currentHedgeLeverage,
         });
       }
-
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }

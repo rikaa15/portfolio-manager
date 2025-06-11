@@ -10,12 +10,14 @@ export class HyperliquidService {
   private readonly transport = new hl.HttpTransport();
   public readonly infoClient = new hl.InfoClient({ transport: this.transport });
   private readonly exchangeClient: hl.ExchangeClient;
+  private readonly walletAddress: Hex;
 
   constructor(private configService: ConfigService) {
     const privateKey = this.configService.get<string>('hyperliquid.privateKey');
     if (!privateKey) throw new Error('HL_KEY is not defined in environment variables.');
 
     const wallet = privateKeyToAccount(privateKey as Hex);
+    this.walletAddress = wallet.address;
     this.exchangeClient = new hl.ExchangeClient({
       wallet,
       transport: this.transport,
@@ -23,11 +25,14 @@ export class HyperliquidService {
   }
 
   async bootstrap() {
-    const walletAddress = this.configService.get<Hex>('walletAddress');
-    await this.infoClient.clearinghouseState({ user: walletAddress });
+    await this.infoClient.clearinghouseState({ user: this.walletAddress });
     this.logger.log('HyperliquidService bootstrap completed');
   }
 
+  async getUserPosition(coin: string) {
+    const data = await this.infoClient.clearinghouseState({ user: this.walletAddress });
+    return data.assetPositions.find((p) => p.position.coin === coin);
+  }
 
   async getCurrentPrice(coin: string): Promise<number> {
     const mids = await this.infoClient.allMids();
@@ -118,8 +123,7 @@ export class HyperliquidService {
   }
   
   async closePosition(coin: string, isLong: boolean) {
-    const walletAddress = this.configService.get<Hex>('walletAddress');
-    const userState = await this.infoClient.clearinghouseState({ user: walletAddress });
+    const userState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
   
     const meta = await this.infoClient.meta();
     const assetIndex = meta.universe.findIndex((c) => c.name === coin);
