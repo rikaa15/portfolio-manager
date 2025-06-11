@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import axios, { AxiosInstance } from 'axios';
 
 interface OptionKlineData {
   timestamp: Date;
@@ -61,16 +62,86 @@ interface IndexPrice {
   indexPrice: number;
 }
 
+interface BinanceExchangeInfoResponse {
+  optionSymbols: Array<{
+    symbol: string;
+    underlying: string;
+    strikePrice: string;
+    expiryDate: number;
+    side: "CALL" | "PUT";
+    unit: number;
+    minQty: string;
+  }>;
+}
+
+interface BinanceKlineResponse extends Array<{
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
+  interval: string;
+  tradeCount: number;
+  takerVolume: string;
+  takerAmount: string;
+  amount: string;
+  openTime: number;
+  closeTime: number;
+}> {}
+
+interface BinanceMarkResponse extends Array<{
+  symbol: string;
+  markPrice: string;
+  bidIV: string;
+  askIV: string;
+  delta: string;
+  theta: string;
+  gamma: string;
+  vega: string;
+  highPriceLimit: string;
+  lowPriceLimit: string;
+}> {}
+
+interface BinanceTickerResponse extends Array<{
+  symbol: string;
+  priceChange: string;
+  priceChangePercent: string;
+  lastPrice: string;
+  lastQty: string;
+  open: string;
+  high: string;
+  low: string;
+  volume: string;
+  openTime: number;
+  closeTime: number;
+  tradeCount: number;
+  strikePrice: string;
+}> {}
+
+interface BinanceTradesResponse extends Array<{
+  price: string;
+  qty: string;
+  quoteQty: string;
+  time: number;
+  side: number;
+}> {}
+
+interface BinanceIndexResponse {
+  time: number;
+  indexPrice: string;
+}
+
 @Injectable()
 export class BinanceService {
   private readonly baseUrl = 'https://eapi.binance.com';
+  private readonly client: AxiosInstance = axios.create({ 
+    baseURL: `${this.baseUrl}/eapi/v1` 
+  });
 
   async getOptionContracts(): Promise<OptionContract[]> {
-    const url = `${this.baseUrl}/eapi/v1/exchangeInfo`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const { data } = await this.client.get<BinanceExchangeInfoResponse>('/exchangeInfo');
     
-    return data.optionSymbols.map((option: any) => ({
+    return data.optionSymbols.map((option) => ({
       symbol: option.symbol,
       underlying: option.underlying,
       strikePrice: parseFloat(option.strikePrice),
@@ -81,17 +152,22 @@ export class BinanceService {
     }));
   }
 
-  async getOptionHistoricalData(
+  async getOptionKlineData(
     symbol: string,
     interval: string = '1d',
     startTime: number,
     endTime: number
   ): Promise<OptionKlineData[]> {
-    const url = `${this.baseUrl}/eapi/v1/klines?symbol=${symbol}&interval=${interval}&startTime=${startTime}&endTime=${endTime}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const { data } = await this.client.get<BinanceKlineResponse>('/klines', {
+      params: {
+        symbol,
+        interval,
+        startTime,
+        endTime
+      }
+    });
 
-    return data.map((kline: any) => ({
+    return data.map((kline) => ({
       timestamp: new Date(kline.openTime),
       open: parseFloat(kline.open),
       high: parseFloat(kline.high),
@@ -101,15 +177,15 @@ export class BinanceService {
     }));
   }
 
-  async getOptionGreeks(symbol?: string): Promise<OptionMarkData[]> {
-    const url = symbol 
-      ? `${this.baseUrl}/eapi/v1/mark?symbol=${symbol}`
-      : `${this.baseUrl}/eapi/v1/mark`;
-    const response = await fetch(url);
-    const data = await response.json();
+  async getOptionMarkData(symbol?: string): Promise<OptionMarkData[]> {
+    const { data } = await this.client.get<BinanceMarkResponse>('/mark', {
+      params: {
+        symbol
+      }
+    });
 
     const markData = Array.isArray(data) ? data : [data];
-    return markData.map((mark: any) => ({
+    return markData.map((mark) => ({
       symbol: mark.symbol,
       markPrice: parseFloat(mark.markPrice),
       bidIV: parseFloat(mark.bidIV),
@@ -123,15 +199,15 @@ export class BinanceService {
     }));
   }
 
-  async get24hrTicker(symbol?: string): Promise<OptionTicker[]> {
-    const url = symbol 
-      ? `${this.baseUrl}/eapi/v1/ticker?symbol=${symbol}`
-      : `${this.baseUrl}/eapi/v1/ticker`;
-    const response = await fetch(url);
-    const data = await response.json();
+  async getDailyPriceStats(symbol?: string): Promise<OptionTicker[]> {
+    const { data } = await this.client.get<BinanceTickerResponse>('/ticker', {
+      params: {
+        symbol
+      }
+    });
 
     const tickerData = Array.isArray(data) ? data : [data];
-    return tickerData.map((ticker: any) => ({
+    return tickerData.map((ticker) => ({
       symbol: ticker.symbol,
       priceChange: parseFloat(ticker.priceChange),
       priceChangePercent: parseFloat(ticker.priceChangePercent),
@@ -149,11 +225,14 @@ export class BinanceService {
   }
 
   async getRecentTrades(symbol: string, limit: number = 100): Promise<TradeData[]> {
-    const url = `${this.baseUrl}/eapi/v1/trades?symbol=${symbol}&limit=${limit}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const { data } = await this.client.get<BinanceTradesResponse>('/trades', {
+      params: {
+        symbol,
+        limit
+      }
+    });
 
-    return data.map((trade: any) => ({
+    return data.map((trade) => ({
       price: parseFloat(trade.price),
       qty: parseFloat(trade.qty),
       quoteQty: parseFloat(trade.quoteQty),
@@ -163,15 +242,15 @@ export class BinanceService {
   }
 
   async getHistoricalTrades(symbol: string, fromId?: number, limit: number = 100): Promise<TradeData[]> {
-    let url = `${this.baseUrl}/eapi/v1/historicalTrades?symbol=${symbol}&limit=${limit}`;
-    if (fromId) {
-      url += `&fromId=${fromId}`;
-    }
-    
-    const response = await fetch(url);
-    const data = await response.json();
+    const { data } = await this.client.get<BinanceTradesResponse>('/historicalTrades', {
+      params: {
+        symbol,
+        fromId,
+        limit
+      }
+    });
 
-    return data.map((trade: any) => ({
+    return data.map((trade) => ({
       price: parseFloat(trade.price),
       qty: parseFloat(trade.qty),
       quoteQty: parseFloat(trade.quoteQty),
@@ -180,10 +259,12 @@ export class BinanceService {
     }));
   }
 
-  async getBTCUSDTIndexPrice(): Promise<IndexPrice> {
-    const url = `${this.baseUrl}/eapi/v1/index?underlying=BTCUSDT`;
-    const response = await fetch(url);
-    const data = await response.json();
+  async getIndexPrice(underlying: string = 'BTCUSDT'): Promise<IndexPrice> {
+    const { data } = await this.client.get<BinanceIndexResponse>('/index', {
+      params: {
+        underlying
+      }
+    });
 
     return {
       time: data.time,

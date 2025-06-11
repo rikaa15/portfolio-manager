@@ -17,7 +17,7 @@ describe('BinanceService', () => {
   });
 
   it('gets BTCUSDT index price', async () => {
-    const indexData = await service.getBTCUSDTIndexPrice();
+    const indexData = await service.getIndexPrice();
     
     console.log(`Current spot price: $${indexData.indexPrice.toFixed(2)}`);
     
@@ -31,7 +31,7 @@ describe('BinanceService', () => {
     
     if (btcOptions.length > 0) {
       const symbol = btcOptions[0].symbol;
-      const ticker = await service.get24hrTicker(symbol);
+      const ticker = await service.getDailyPriceStats(symbol);
   
       console.log(`24hr price statistics for an option contract: ${symbol} - $${ticker[0].lastPrice.toFixed(4)} (${ticker[0].priceChangePercent.toFixed(2)}%)`);
       
@@ -68,7 +68,7 @@ describe('BinanceService', () => {
     expect(contracts[0].strikePrice).toBeGreaterThan(0);
   });
 
-  it('gets option historical data', async () => {
+  it('gets option kline data', async () => {
     const contracts = await service.getOptionContracts();
     const btcOptions = contracts.filter(c => c.underlying === 'BTCUSDT');
     
@@ -77,27 +77,31 @@ describe('BinanceService', () => {
       const endTime = Date.now();
       const startTime = endTime - (7 * 24 * 60 * 60 * 1000);
       
-      const data = await service.getOptionHistoricalData(symbol, '1d', startTime, endTime);
+      const data = await service.getOptionKlineData(symbol, '1d', startTime, endTime);
 
-      console.log(`Historical Candlistick data: ${data.length} daily candles over 7 days`);
+      console.log(`Historical Candlestick data: ${data.length} daily candles over 7 days`);
       
       expect(data.length).toBeGreaterThan(0);
       expect(data[0].close).toBeGreaterThan(0);
     }
   });
 
-  it('gets current Greeks data', async () => {
+  it('gets current mark data', async () => {
     const contracts = await service.getOptionContracts();
     const btcOptions = contracts.filter(c => c.underlying === 'BTCUSDT');
     
     if (btcOptions.length > 0) {
       const symbol = btcOptions[0].symbol;
-      const greeks = await service.getOptionGreeks(symbol);
+      const markData = await service.getOptionMarkData(symbol);
 
-      console.log(`Current Greeks: Delta ${greeks[0].delta.toFixed(3)}, IV ${(greeks[0].bidIV * 100).toFixed(1)}%`);
+      console.log(`Current Mark Data for ${symbol}:`);
+      console.log(`  Mark Price: $${markData[0].markPrice.toFixed(4)}`);
+      console.log(`  Δ=${markData[0].delta.toFixed(3)}, Θ=${markData[0].theta.toFixed(3)}, Γ=${markData[0].gamma.toFixed(3)}, ν=${markData[0].vega.toFixed(3)}`);
+      console.log(`  IV: Bid ${(markData[0].bidIV * 100).toFixed(1)}%, Ask ${(markData[0].askIV * 100).toFixed(1)}%`);
+      console.log(`  Price Limits: $${markData[0].lowPriceLimit.toFixed(4)} - $${markData[0].highPriceLimit.toFixed(4)}`);
       
-      expect(greeks.length).toBeGreaterThan(0);
-      expect(greeks[0].markPrice).toBeGreaterThan(0);
+      expect(markData.length).toBeGreaterThan(0);
+      expect(markData[0].markPrice).toBeGreaterThan(0);
     }
   });
 });
