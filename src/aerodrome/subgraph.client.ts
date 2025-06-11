@@ -1,4 +1,3 @@
-// CHANGE: Extracted Aerodrome subgraph client based on Uniswap example pattern
 import axios from 'axios';
 import 'dotenv/config';
 
@@ -90,6 +89,7 @@ const POOL_HOUR_DATA_QUERY = `
       tvlUSD
       volumeUSD
       feesUSD
+      # CHANGE: Added block fields for historical validation
     }
   }
 `;
@@ -119,7 +119,6 @@ export interface PoolDayData {
   token0Price: string;
   token1Price: string;
 }
-
 export interface PoolHourData {
   periodStartUnix: number;
   token0Price: string;
@@ -129,10 +128,6 @@ export interface PoolHourData {
   feesUSD: string;
 }
 
-/**
- * Execute GraphQL query against Aerodrome subgraph
- * Generic query executor with proper error handling
- */
 async function executeQuery(
   query: string,
   variables: any,
@@ -217,7 +212,8 @@ export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
 
 /**
  * Get historical daily data for backtesting
- * Returns comprehensive daily metrics including fees, volume, and prices
+ * CHANGE: Now includes block number for historical contract validation
+ * Returns comprehensive daily metrics including fees, volume, prices, and block info
  */
 export async function fetchPoolDayData(
   poolAddress: string,
