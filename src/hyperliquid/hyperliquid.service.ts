@@ -10,12 +10,14 @@ export class HyperliquidService {
   private readonly transport = new hl.HttpTransport();
   public readonly infoClient = new hl.InfoClient({ transport: this.transport });
   private readonly exchangeClient: hl.ExchangeClient;
+  public readonly walletAddress: Hex;
 
   constructor(private configService: ConfigService) {
     const privateKey = this.configService.get<string>('hyperliquid.privateKey');
     if (!privateKey) throw new Error('HL_KEY is not defined in environment variables.');
 
     const wallet = privateKeyToAccount(privateKey as Hex);
+    this.walletAddress = wallet.address;
     this.exchangeClient = new hl.ExchangeClient({
       wallet,
       transport: this.transport,
@@ -23,32 +25,36 @@ export class HyperliquidService {
   }
 
   async bootstrap() {
-    const walletAddress = this.configService.get<Hex>('walletAddress');
-    await this.infoClient.clearinghouseState({ user: walletAddress });
+    await this.infoClient.clearinghouseState({ user: this.walletAddress });
     this.logger.log('HyperliquidService bootstrap completed');
   }
 
-  async backtest({
-    coin,
-    interval,
-    entryTime,
-    exitTimes,
-    collateral,
-    leverage,
-    isLong,
-  }: {
-    coin: string;
-    interval: "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "8h" | "12h" | "1d" | "3d" | "1w" | "1M";
-    entryTime: Date;
-    exitTimes: Date[];
-    collateral: number;
-    leverage: number;
-    isLong: boolean;
-  }) {
-    const notional = collateral * leverage;
-    const startTime = entryTime.getTime();
-    const endTime = Math.max(...exitTimes.map(t => t.getTime()));
+  async getUserPosition(coin: string) {
+    const data = await this.infoClient.clearinghouseState({ user: this.walletAddress });
+    return data.assetPositions.find((p) => p.position.coin === coin);
+  }
 
+  async getCurrentPrice(coin: string): Promise<number> {
+    const mids = await this.infoClient.allMids();
+    const price = mids[coin];
+    if (!price) throw new Error(`Price not found for ${coin}`);
+    
+    return parseFloat(price);
+  }
+
+  async getHistoricalPrices(
+    coin: string,
+    interval: "1m" | "3m" | "5m" | "15m" | "30m" | "1h" | "2h" | "4h" | "8h" | "12h" | "1d" | "3d" | "1w" | "1M",
+    startTime: number,
+    endTime: number
+  ): Promise<Array<{
+    timestamp: Date;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>> {
     const candles = await this.infoClient.candleSnapshot({
       coin,
       interval,
@@ -56,36 +62,14 @@ export class HyperliquidService {
       endTime,
     });
 
-    const candleData = candles.map((c: any) => ({
-      ts: new Date(Number(c.T)),
+    return candles.map((c: any) => ({
+      timestamp: new Date(Number(c.T)),
+      open: parseFloat(c.o),
+      high: parseFloat(c.h),
+      low: parseFloat(c.l),
       close: parseFloat(c.c),
+      volume: parseFloat(c.v),
     }));
-
-    const findClosest = (target: Date) =>
-      candleData.reduce((a, b) =>
-        Math.abs(a.ts.getTime() - target.getTime()) < Math.abs(b.ts.getTime() - target.getTime()) ? a : b
-      );
-
-    const entry = findClosest(entryTime);
-    const entryPrice = entry.close;
-
-    const results = exitTimes.map(t => {
-      const exit = findClosest(t);
-      const exitPrice = exit.close;
-      const priceDiff = isLong ? exitPrice - entryPrice : entryPrice - exitPrice;
-      const pnl = (priceDiff / entryPrice) * notional;
-      return {
-        exitTime: exit.ts,
-        exitPrice,
-        pnl,
-      };
-    });
-
-    return {
-      entryTime: entry.ts,
-      entryPrice,
-      results,
-    };
   }
 
   async openPosition({
@@ -108,9 +92,9 @@ export class HyperliquidService {
     const assetIndex = meta.universe.findIndex((c) => c.name === coin);
     if (assetIndex === -1) throw new Error(`Asset ${coin} not found in universe`);
     
-    console.log('Asset metadata:', meta.universe[assetIndex]);
-    console.log('Original mark price:', markPrice);
-    console.log('Size:', size.toFixed(4));
+    // console.log('Asset metadata:', meta.universe[assetIndex]);
+    // console.log('Original mark price:', markPrice);
+    // console.log('Size:', size.toFixed(4));
     
  
     const isBuy = isLong;
@@ -133,14 +117,13 @@ export class HyperliquidService {
       grouping: "na" as const,
     };
     
-    console.log('Full order object:', JSON.stringify(order, null, 2));
+    // console.log('Full order object:', JSON.stringify(order, null, 2));
   
     return await this.exchangeClient.order(order);
   }
   
   async closePosition(coin: string, isLong: boolean) {
-    const walletAddress = this.configService.get<Hex>('walletAddress');
-    const userState = await this.infoClient.clearinghouseState({ user: walletAddress });
+    const userState = await this.infoClient.clearinghouseState({ user: this.walletAddress });
   
     const meta = await this.infoClient.meta();
     const assetIndex = meta.universe.findIndex((c) => c.name === coin);
@@ -185,5 +168,4 @@ export class HyperliquidService {
   
     return await this.exchangeClient.order(order);
   }
-  
 }

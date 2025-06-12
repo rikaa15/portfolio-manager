@@ -127,14 +127,13 @@ export class UniswapLpService {
       this.logger.log(`Signer balance: ${ethers.formatEther(balance)} ETH`);
 
       // Only call position check on mainnet
-      // if (this.currentNetwork === 'ethereum') {
-      //   await this.getWbtcUsdcPosition();
-      // } else {
-      //   this.logger.log(
-      //     `Skipping position check for ${this.currentNetwork} network`,
-      //   );
-      // }
-
+      if (this.currentNetwork === 'ethereum') {
+        // await this.getWbtcUsdcPosition('1006358');
+      } else {
+        this.logger.log(
+          `Skipping position check for ${this.currentNetwork} network`,
+        );
+      }
       this.logger.log('UniswapLpService initialized successfully');
     } catch (error) {
       this.logger.error(
@@ -531,10 +530,10 @@ export class UniswapLpService {
   }
 
   async getPoolPriceHistory(
-    poolAddress: string,
     startDate: string,
     endDate: string,
     interval: 'daily' | 'hourly' = 'daily',
+    poolAddress = this.uniswapConfig.poolAddress,
   ): Promise<
     Array<{
       timestamp: number;
@@ -619,7 +618,7 @@ export class UniswapLpService {
     this.logger.log('Bulk approval setup complete');
   }
 
-  async getWbtcUsdcPosition(tokenId: string = '999399'): Promise<void> {
+  async getWbtcUsdcPosition(tokenId: string): Promise<void> {
     const token0Symbol = this.uniswapConfig.tokens.token0.symbol;
     const token1Symbol = this.uniswapConfig.tokens.token1.symbol;
 

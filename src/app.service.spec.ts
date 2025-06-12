@@ -11,8 +11,6 @@ import { ethers } from 'ethers';
 import { FundingService } from './funding/funding.service';
 import { AppConfigModule } from './config/config.module';
 
-const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
-
 const POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
 const INITIAL_INVESTMENT = 10000; // $10,000 USD
 
@@ -25,15 +23,6 @@ const logger = {
   },
 };
 
-const client = axios.create({
-  baseURL:
-    'https://gateway.thegraph.com/api/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV',
-  headers: {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${SUBGRAPH_API_KEY}`,
-  },
-});
-
 // Date helpers
 const getUnixTimestamp = (dateString: string): number => {
   return Math.floor(new Date(dateString).getTime() / 1000);
@@ -42,188 +31,6 @@ const getUnixTimestamp = (dateString: string): number => {
 const formatDate = (unixTimestamp: number): string => {
   return new Date(unixTimestamp * 1000).toISOString().split('T')[0];
 };
-
-// GraphQL queries
-const POOL_INFO_QUERY = `
-  query PoolInfo($poolId: ID!) {
-    pool(id: $poolId) {
-      id
-      createdAtTimestamp
-      token0 {
-        symbol
-        decimals
-      }
-      token1 {
-        symbol
-        decimals
-      }
-      feeTier
-      totalValueLockedUSD
-    }
-  }
-`;
-
-const POOL_DAY_DATA_QUERY = `
-  query PoolDayData($poolId: ID!, $startDate: Int!, $endDate: Int!) {
-    poolDayDatas(
-      where: { 
-        pool: $poolId, 
-        date_gte: $startDate, 
-        date_lte: $endDate 
-      }
-      orderBy: date
-      orderDirection: asc
-      first: 1000
-    ) {
-      date
-      volumeUSD
-      feesUSD
-      tvlUSD
-      token0Price
-      token1Price
-      liquidity
-      tick
-    }
-  }
-`;
-
-interface PoolInfo {
-  id: string;
-  createdAtTimestamp: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-  feeTier: string;
-  totalValueLockedUSD: string;
-}
-
-interface PoolDayData {
-  date: number;
-  volumeUSD: string;
-  feesUSD: string;
-  tvlUSD: string;
-  token0Price: string;
-  token1Price: string;
-  liquidity: string;
-  tick: string;
-}
-
-/**
- * Execute GraphQL query against Uniswap V3 subgraph
- */
-async function executeQuery(
-  query: string,
-  variables: any,
-  operationName?: string,
-): Promise<any> {
-  try {
-    const requestData = {
-      query,
-      variables,
-      operationName,
-    };
-
-    const { data } = await client.post('', requestData);
-
-    if (data.errors && data.errors.length > 0) {
-      throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-    }
-
-    return data.data;
-  } catch (error: any) {
-    if (error.response) {
-      logger.error(
-        `Query failed: ${error.response.status} ${error.response.statusText}`,
-      );
-      if (error.response.data) {
-        logger.error(`Response: ${JSON.stringify(error.response.data)}`);
-      }
-    } else if (error.message) {
-      logger.error(`Error: ${error.message}`);
-    } else {
-      logger.error(`Unknown error: ${String(error)}`);
-    }
-    throw error;
-  }
-}
-
-/**
- * Get pool basic information
- */
-async function getPoolInfo(poolAddress: string): Promise<PoolInfo> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-
-  const data = await executeQuery(
-    POOL_INFO_QUERY,
-    {
-      poolId: formattedPoolAddress,
-    },
-    'PoolInfo',
-  );
-
-  if (!data?.pool) {
-    throw new Error('Pool not found');
-  }
-
-  return data.pool;
-}
-
-/**
- * Get historical daily data for the pool
- */
-async function getPoolDayData(
-  poolAddress: string,
-  startDate: string,
-  endDate: string,
-): Promise<PoolDayData[]> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-  const startTimestamp = getUnixTimestamp(startDate);
-  const endTimestamp = getUnixTimestamp(endDate);
-
-  const data = await executeQuery(
-    POOL_DAY_DATA_QUERY,
-    {
-      poolId: formattedPoolAddress,
-      startDate: startTimestamp,
-      endDate: endTimestamp,
-    },
-    'PoolDayData',
-  );
-
-  if (!data?.poolDayDatas) {
-    logger.error('No pool day data returned from GraphQL query');
-    return [];
-  }
-
-  return data.poolDayDatas;
-}
-
-/**
- * Calculate impermanent loss percentage
- */
-function calculateImpermanentLoss(
-  currentToken0Price: number,
-  currentToken1Price: number,
-  initialToken0Price: number,
-  initialToken1Price: number,
-): number {
-  // Price ratio: relative change between token0 and token1 prices
-  const priceRatio =
-    currentToken0Price /
-    initialToken0Price /
-    (currentToken1Price / initialToken1Price);
-
-  // Square root from constant product formula (x * y = k) used in AMMs
-  const sqrtPriceRatio = Math.sqrt(priceRatio);
-
-  // LP value formula: accounts for automatic rebalancing in AMM pools
-  const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
-
-  // Holding value normalized to 1 (100% baseline)
-  const holdValue = 1;
-
-  // Impermanent loss: LP performance vs holding 50/50 portfolio
-  return (lpValue - holdValue) * 100; // Convert to percentage
-}
 
 /**
  * Run backtest simulation
@@ -263,20 +70,25 @@ async function runBacktest(
   let weeklyFees = 0;
   let weeklyFundingCosts = 0;
   let daysOutOfRange = 0;
+  let cumulativeHedgePnL = 0;
+  let cumulativeLpPnL = 0;
+  let previousHedgeValue = 0;
 
   try {
     // Get pool information
     logger.log('Fetching pool information...');
-    const poolInfo = await getPoolInfo(poolAddress);
+    const poolInfo = await fetchPoolInfo(poolAddress);
     logger.log(
       `Pool Info: ${poolInfo.token0.symbol}/${poolInfo.token1.symbol}`,
     );
-    logger.log(`Fee Tier: ${parseFloat(poolInfo.feeTier) / 10000}%`);
+    logger.log(`Fee Tier: 0.3%`); // Hardcoded since we know this pool's fee tier
     logger.log('');
 
     // Get historical data
     logger.log('Fetching historical data...');
-    const poolDayData = await getPoolDayData(poolAddress, startDate, endDate);
+    const startTimestamp = getUnixTimestamp(startDate);
+    const endTimestamp = getUnixTimestamp(endDate);
+    const poolDayData = await fetchPoolDayPrices(poolAddress, startTimestamp, endTimestamp);
 
     if (poolDayData.length === 0) {
       logger.log('No data found for the specified period');
@@ -359,8 +171,9 @@ async function runBacktest(
         daysOutOfRange = 0;
       }
 
-      // Calculate daily fee earnings
-      const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
+      // Calculate daily fee earnings (estimate based on volume)
+      const dailyVolume = parseFloat(dayData.volumeUSD);
+      const dailyFees = dailyVolume * 0.003 * lpSharePercentage; // 0.3% fee tier
       weeklyFees += dailyFees;
       cumulativeFees += dailyFees;
 
@@ -414,11 +227,23 @@ async function runBacktest(
 
       // Calculate total PnL including hedge
       const positionPnL = currentPositionValue - initialAmount;
-      const hedgePnL = futuresDirection === 'short' ? 
-        initialToken0Price - currentToken0Price : 
-        currentToken0Price - initialToken0Price;
-      const hedgeValue = (futuresNotional * futuresLeverage * hedgePnL / initialToken0Price);
-      const totalPnL = positionPnL + cumulativeFees - cumulativeFundingCosts + hedgeValue;
+      
+      // Calculate hedge PnL based on price change and position size
+      const hedgeNotional = futuresNotional * futuresLeverage;
+      const priceChange = (currentToken0Price - initialToken0Price) / initialToken0Price;
+      const hedgeValue = futuresDirection === 'short' ? 
+        -hedgeNotional * priceChange : // Short position profits when price falls
+        hedgeNotional * priceChange;   // Long position profits when price rises
+      
+      // Calculate daily hedge PnL
+      const dailyHedgePnL = hedgeValue - previousHedgeValue;
+      previousHedgeValue = hedgeValue;
+      cumulativeHedgePnL += dailyHedgePnL;
+      
+      // Calculate LP PnL (position value change + fees)
+      cumulativeLpPnL = positionPnL + cumulativeFees;
+      
+      const totalPnL = cumulativeLpPnL + cumulativeHedgePnL - cumulativeFundingCosts;
 
       // Calculate running APR
       const runningAPR = ((cumulativeFees - cumulativeFundingCosts) / initialAmount) * (365 / dayNumber) * 100;
@@ -428,7 +253,8 @@ async function runBacktest(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
         `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
         `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-        `Hedge: $${(futuresNotional * futuresLeverage).toLocaleString()} (${futuresLeverage.toFixed(1)}x) | ` +
+        `Hedge: $${hedgeNotional.toLocaleString()} (${futuresLeverage.toFixed(1)}x) | ` +
+        `Daily Hedge PnL: ${dailyHedgePnL >= 0 ? '+' : ''}$${dailyHedgePnL.toFixed(2)} | ` +
         `Funding: -$${dailyFundingCost.toFixed(2)} | ` +
         `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
         `APR: ${runningAPR.toFixed(1)}%`
@@ -457,6 +283,8 @@ async function runBacktest(
     logger.log('=== Strategy Summary ===');
     logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
     logger.log(`Final LP Value: $${finalPositionValue.toLocaleString()}`);
+    logger.log(`LP Position PnL: ${cumulativeLpPnL >= 0 ? '+' : ''}$${cumulativeLpPnL.toLocaleString()}`);
+    logger.log(`Hedge Position PnL: ${cumulativeHedgePnL >= 0 ? '+' : ''}$${cumulativeHedgePnL.toLocaleString()}`);
     logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
     logger.log(`Total Funding Costs: $${cumulativeFundingCosts.toLocaleString()}`);
     logger.log(`Net Fees: $${(cumulativeFees - cumulativeFundingCosts).toLocaleString()}`);
@@ -480,6 +308,34 @@ async function runBacktest(
       logger.error('Backtest failed: ' + String(error));
     }
   }
+}
+
+/**
+ * Calculate impermanent loss percentage
+ */
+function calculateImpermanentLoss(
+  currentToken0Price: number,
+  currentToken1Price: number,
+  initialToken0Price: number,
+  initialToken1Price: number,
+): number {
+  // Price ratio: relative change between token0 and token1 prices
+  const priceRatio =
+    currentToken0Price /
+    initialToken0Price /
+    (currentToken1Price / initialToken1Price);
+
+  // Square root from constant product formula (x * y = k) used in AMMs
+  const sqrtPriceRatio = Math.sqrt(priceRatio);
+
+  // LP value formula: accounts for automatic rebalancing in AMM pools
+  const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
+
+  // Holding value normalized to 1 (100% baseline)
+  const holdValue = 1;
+
+  // Impermanent loss: LP performance vs holding 50/50 portfolio
+  return (lpValue - holdValue) * 100; // Convert to percentage
 }
 
 describe('AppService', () => {
@@ -530,12 +386,6 @@ describe('AppService', () => {
             getSignerAddress: jest.fn().mockResolvedValue('0x1234...'),
           }
         },
-        // {
-        //   provide: ConfigService,
-        //   useValue: {
-        //     get: jest.fn().mockReturnValue('https://eth-mainnet.alchemyapi.io/v2/your-api-key')
-        //   }
-        // },
         {
           provide: Logger,
           useValue: {

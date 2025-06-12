@@ -3,6 +3,23 @@ import { HyperliquidService } from './hyperliquid.service';
 import { ConfigModule } from '@nestjs/config';
 import configuration from '../config/configuration';
 
+function findClosestPrice(
+  priceData: Array<{
+    timestamp: Date;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>,
+  targetTime: Date
+) {
+  return priceData.reduce((a, b) =>
+    Math.abs(a.timestamp.getTime() - targetTime.getTime()) < 
+    Math.abs(b.timestamp.getTime() - targetTime.getTime()) ? a : b
+  );
+}
+
 describe('HyperliquidService', () => {
   let service: HyperliquidService;
 
@@ -32,26 +49,41 @@ describe('HyperliquidService', () => {
       exitTimes.push(exit);
     }
 
-    const result = await service.backtest({
-      coin: 'BTC',
-      interval: '1d',
-      entryTime,
-      exitTimes,
-      collateral: 100,
-      leverage: 10,
-      isLong: true,
+    const collateral = 100;
+    const leverage = 10;
+    const isLong = true;
+    const notional = collateral * leverage;
+    const startTime = entryTime.getTime();
+    const endTime = Math.max(...exitTimes.map(t => t.getTime()));
+
+    const priceData = await service.getHistoricalPrices('BTC', '1d', startTime, endTime);
+
+    const entry = findClosestPrice(priceData, entryTime);
+    const entryPrice = entry.close;
+
+    const results = exitTimes.map(exitTime => {
+      const exit = findClosestPrice(priceData, exitTime);
+      
+      const priceDiff = isLong ? exit.close - entryPrice : entryPrice - exit.close;
+      const pnl = (priceDiff / entryPrice) * notional;
+      
+      return {
+        exitTime: exit.timestamp,
+        exitPrice: exit.close,
+        pnl,
+      };
     });
 
-    console.log(`\n[Entry @ ${result.entryTime.toISOString()}] Price: $${result.entryPrice.toFixed(2)}\n`);
+    console.log(`\n[Entry @ ${entry.timestamp.toISOString()}] Price: $${entryPrice.toFixed(2)}\n`);
 
-    for (const r of result.results) {
+    for (const r of results) {
       const pnlStr = r.pnl >= 0 ? `+${r.pnl.toFixed(2)}` : r.pnl.toFixed(2);
       console.log(`[Exit @ ${r.exitTime.toISOString()}] Price: $${r.exitPrice.toFixed(2)} → PnL = $${pnlStr}`);
     }
 
-    expect(result.entryPrice).toBeGreaterThan(0);
-    expect(result.results.length).toBe(365);
-    for (const r of result.results) {
+    expect(entryPrice).toBeGreaterThan(0);
+    expect(results.length).toBe(365);
+    for (const r of results) {
       expect(typeof r.pnl).toBe('number');
     }
   }, 30_000);

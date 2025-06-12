@@ -33,3 +33,54 @@ Achieve at least 15% higher annual alpha than passive BTC while maintaining mini
 • Time-in-range ≥ 85% to maximize fee generation
 
 • Total strategy return (LP fees minus funding costs minus gas) ≥ 15% annually.
+
+### Implementation details
+To maintain BTC neutrality in a BTC/USDC liquidity pool strategy while using Hyperliquid perpetual shorts, the hedge position must dynamically adjust based on the LP's current composition. Here's the calculation methodology:
+```
+Short Position Size = (BTC_Value_in_LP / Total_LP_Value − 0.5) × LP_Notional_Value × 2
+ ```
+
+Where:
+- BTC Value in LP = Current BTC holdings in pool × BTC price
+- Total LP Value = BTC Value + USDC in pool
+- LP Notional Value = Total value of both assets in the position
+
+Example Calculation:
+If LP contains $55,000 BTC and $45,000 USDC (55% BTC allocation):
+```
+Short Size = (0.55 - 0.5) × $100,000 × 2 = $10,000 (10% of LP value)
+```
+
+Implementation Steps:
+1. Monitor LP Composition
+Track real-time:
+- BTC price
+- BTC quantity in LP
+- USDC quantity in LP
+
+2. Calculate Delta Exposure
+```
+BTC Exposure Ratio = BTC Value / (BTC Value + USDC)
+```
+
+3. Determine Hedge Adjustment
+
+BTC Allocation	Action	New Short %
+>55%	Increase short	(Allocation% - 50%) × 2
+<45%	Decrease short	(50% - Allocation%) × 2
+45-55%	Maintain	No change
+
+4. Execute Hedge:
+- Use Hyperliquid's perpetual futures market 
+- Set order size to calculated short percentage
+- Cross-margin mode recommended for efficiency
+
+Key Considerations:
+- Rebalancing triggers when allocation drifts >5% from target 
+- Maintain 75% margin buffer on Hyperliquid 
+- Factor in funding rates >0.1%/8h when holding positions 
+- Gas costs >$20/transaction warrant delayed rebalancing
+
+This methodology keeps net BTC delta within ±5% while preserving fee-generating capacity in the LP position.
+
+The multiplicative factor of 2 in the formula accounts for the concentrated liquidity characteristics of Uniswap V3 positions.
