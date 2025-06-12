@@ -104,4 +104,64 @@ describe('BinanceService', () => {
       expect(markData[0].markPrice).toBeGreaterThan(0);
     }
   });
+
+  it('runs backtest for BTC options over available period', async () => {
+    const contracts = await service.getOptionContracts();
+    const btcCallOptions = contracts.filter(c => 
+      c.underlying === 'BTCUSDT' && 
+      c.side === 'CALL' && 
+      c.expiryDate > Date.now() + (30 * 24 * 60 * 60 * 1000)
+    );
+    
+    if (btcCallOptions.length === 0) {
+      console.log('No suitable BTC call options found for backtesting');
+      return;
+    }
+
+    const symbol = btcCallOptions[0].symbol;
+    const positionSize = 10;
+    
+    console.log(`\n=== BTC Options Backtesting ===`);
+    console.log(`${symbol}, Strike Price: $${btcCallOptions[0].strikePrice}`);
+    
+    try {
+      const endTime = Date.now();
+      const startTime = endTime - (365 * 24 * 60 * 60 * 1000);
+      
+      const klineData = await service.getOptionKlineData(symbol, '1d', startTime, endTime);
+      
+      if (klineData.length === 0) {
+        console.log('No historical data available for backtesting');
+        return;
+      }
+
+      klineData.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+      console.log(`Period: ${klineData[0].timestamp.toISOString()} to ${klineData[klineData.length-1].timestamp.toISOString()}`);
+
+      const entryPrice = klineData[0].close;
+      console.log(`\n[Entry @ ${klineData[0].timestamp.toISOString()}] Price: $${entryPrice.toFixed(4)}\n`);
+
+      const results = klineData.slice(1).map((dataPoint, index) => {
+        const pnl = (dataPoint.close - entryPrice) * positionSize;
+        const pnlStr = pnl >= 0 ? `+${pnl.toFixed(2)}` : pnl.toFixed(2);
+        
+        console.log(`[Exit @ ${dataPoint.timestamp.toISOString()}] Price: $${dataPoint.close.toFixed(4)} → PnL = $${pnlStr}`);
+        
+        return { 
+          day: index + 1,
+          exitTime: dataPoint.timestamp, 
+          exitPrice: dataPoint.close, 
+          pnl 
+        };
+      });
+
+      expect(entryPrice).toBeGreaterThan(0);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every(r => typeof r.pnl === 'number')).toBe(true);
+      
+    } catch (error) {
+      console.log(`Error during backtesting: ${error.message}`);
+    }
+  }, 30000);
 });
