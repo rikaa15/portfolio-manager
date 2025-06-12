@@ -232,8 +232,15 @@ export class AppService {
       `);
 
       // Check current hedge position
-      const positionData = await this.hyperliquidService.getUserPosition('BTC');
-      this.logger.log(`Current hedge position: ${JSON.stringify(positionData)}`);
+      const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
+      if(currentHedgePosition) {
+        this.logger.log(`Current hedge position (${this.hyperliquidService.walletAddress}):
+          size=${currentHedgePosition.position.szi} BTC,
+          value=$${currentHedgePosition.position.positionValue},
+          leverage=${
+            currentHedgePosition.position.leverage.value
+          }x`);
+      }
 
       // Check liquidation risk
       const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeSize / positionValue;

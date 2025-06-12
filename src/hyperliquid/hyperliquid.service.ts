@@ -10,7 +10,7 @@ export class HyperliquidService {
   private readonly transport = new hl.HttpTransport();
   public readonly infoClient = new hl.InfoClient({ transport: this.transport });
   private readonly exchangeClient: hl.ExchangeClient;
-  private readonly walletAddress: Hex;
+  public readonly walletAddress: Hex;
 
   constructor(private configService: ConfigService) {
     const privateKey = this.configService.get<string>('hyperliquid.privateKey');
