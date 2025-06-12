@@ -238,47 +238,94 @@ export class AppService {
         this.logger.log(`Current hedge position (${this.hyperliquidService.walletAddress}):
           size=${currentHedgePosition.position.szi} BTC,
           value=$${currentHedgePosition.position.positionValue},
-          leverage=${
-            currentHedgePosition.position.leverage.value
-          }x`);
+          leverage=${currentHedgePosition.position.leverage.value}x`);
       } else {
         this.logger.log('No active hedge position found');
       }
 
-      // Open Hyperliquid short position if not already opened
-      if (!currentHedgePosition || !currentHedgePosition.position || parseFloat(currentHedgePosition.position.szi) === 0) {
-        this.logger.log('No active hedge position found. Opening new short position...');
-        
-        // Calculate hedge size as 50% of LP position value
-        const hedgeSize = positionValue * 0.5;
-        
-        // Use 1x leverage initially for safety
-        const initialLeverage = 1;
-        const collateral = hedgeSize / initialLeverage;
-        
-        this.logger.log(`Opening hedge position:
-          Size: $${hedgeSize.toFixed(2)}
-          Leverage: ${initialLeverage}x
-          Collateral: $${collateral.toFixed(2)}
-        `);
-        
-        try {
-          await this.hyperliquidService.openPosition({
-            coin: 'BTC',
-            isLong: false, // Short position to hedge
-            leverage: initialLeverage,
-            collateral: collateral,
-          });
-          this.currentHedgeLeverage = initialLeverage;
-          this.logger.log('Successfully opened hedge position');
-        } catch (error) {
-          this.logger.error(`Failed to open hedge position: ${error.message}`);
+      // Calculate BTC exposure and target hedge size
+      const usdcValue = usdcAmount;
+      const totalValue = wbtcValue + usdcValue;
+      const btcExposurePercent = wbtcValue / totalValue;
+      
+      // Start with base hedge size (50% of position value)
+      let hedgeSize = positionValue * 0.5;
+      
+      // Adjust hedge size based on price position in range
+      if (inRange) {
+        const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
+        if (pricePosition > 0.7) {
+          // Increase hedge as price approaches upper range
+          hedgeSize *= 1.2;
+        } else if (pricePosition < 0.3) {
+          // Decrease hedge as price approaches lower range
+          hedgeSize *= 0.8;
         }
-        return
+      }
+
+      // Check if we need to adjust the hedge position
+      const needsHedgeAdjustment = !currentHedgePosition || 
+        !currentHedgePosition.position || 
+        parseFloat(currentHedgePosition.position.szi) === 0 ||
+        Math.abs(btcExposurePercent - 0.5) > 0.05 || // >5% deviation from 50/50
+        currentFundingRate > this.FUNDING_RATE_THRESHOLD; // High funding rate
+
+      if (needsHedgeAdjustment) {
+        // Calculate target leverage based on conditions
+        let targetLeverage = 1; // Start with 1x base leverage
+        
+        // Adjust leverage based on funding rate
+        if (currentFundingRate > this.FUNDING_RATE_THRESHOLD) {
+          // Reduce leverage when funding is expensive
+          targetLeverage = Math.max(this.MIN_LEVERAGE, targetLeverage * 0.8);
+        } else if (currentFundingRate < 0) {
+          // Increase leverage when funding is negative (getting paid)
+          targetLeverage = Math.min(this.MAX_LEVERAGE, targetLeverage * 1.2);
+        }
+        
+        // Adjust leverage based on deviation from 50/50
+        const deviationFromTarget = Math.abs(btcExposurePercent - 0.5);
+        if (deviationFromTarget > 0.05) {
+          // Increase leverage to correct larger deviations faster
+          targetLeverage = Math.min(this.MAX_LEVERAGE, targetLeverage * (1 + deviationFromTarget));
+        }
+        
+        // Calculate final position parameters
+        const collateral = hedgeSize / targetLeverage;
+        
+        // Check margin usage
+        const marginUsage = targetLeverage * (collateral / positionValue);
+        if (marginUsage <= this.MAX_MARGIN_USAGE) {
+          this.logger.log(`Adjusting hedge position:
+            Current BTC Exposure: ${(btcExposurePercent * 100).toFixed(2)}%
+            Target Hedge Size: $${hedgeSize.toFixed(2)}
+            Target Leverage: ${targetLeverage.toFixed(2)}x
+            Collateral: $${collateral.toFixed(2)}
+            Margin Usage: ${(marginUsage * 100).toFixed(2)}%
+          `);
+          
+          try {
+            await this.hyperliquidService.openPosition({
+              coin: 'BTC',
+              isLong: false,
+              leverage: targetLeverage,
+              collateral: collateral,
+            });
+            this.currentHedgeLeverage = targetLeverage;
+            this.logger.log('Successfully adjusted hedge position');
+          } catch (error) {
+            this.logger.error(`Failed to adjust hedge position: ${error.message}`);
+            return;
+          }
+        } else {
+          this.logger.warn(`Skipping hedge adjustment - margin usage too high: ${(marginUsage * 100).toFixed(2)}%`);
+        }
+      } else {
+        this.logger.log('No hedge adjustment needed');
       }
 
       // Check liquidation risk
-      const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeSize / positionValue;
+      const hedgeMarginUsage = this.currentHedgeLeverage * hedgeSize / positionValue;
       if (hedgeMarginUsage > this.LIQUIDATION_BUFFER) {
         this.logger.warn('Position approaching liquidation buffer, reducing leverage');
         this.currentHedgeLeverage = Math.max(this.MIN_LEVERAGE, this.currentHedgeLeverage * 0.7);
@@ -286,7 +333,7 @@ export class AppService {
           coin: 'BTC',
           isLong: false,
           leverage: this.currentHedgeLeverage,
-          collateral: targetHedgeSize / this.currentHedgeLeverage,
+          collateral: hedgeSize / this.currentHedgeLeverage,
         });
       }
     } catch (error) {
