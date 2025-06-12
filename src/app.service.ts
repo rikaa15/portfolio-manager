@@ -242,6 +242,37 @@ export class AppService {
           }x`);
       }
 
+      // Open Hyperliquid short position if not already opened
+      if (!currentHedgePosition || !currentHedgePosition.position || parseFloat(currentHedgePosition.position.szi) === 0) {
+        this.logger.log('No active hedge position found. Opening new short position...');
+        
+        // Calculate hedge size as 50% of LP position value
+        const hedgeSize = positionValue * 0.5;
+        
+        // Use 1x leverage initially for safety
+        const initialLeverage = 1;
+        const collateral = hedgeSize / initialLeverage;
+        
+        this.logger.log(`Opening hedge position:
+          Size: $${hedgeSize.toFixed(2)}
+          Leverage: ${initialLeverage}x
+          Collateral: $${collateral.toFixed(2)}
+        `);
+        
+        try {
+          await this.hyperliquidService.openPosition({
+            coin: 'BTC',
+            isLong: false, // Short position to hedge
+            leverage: initialLeverage,
+            collateral: collateral,
+          });
+          this.currentHedgeLeverage = initialLeverage;
+          this.logger.log('Successfully opened hedge position');
+        } catch (error) {
+          this.logger.error(`Failed to open hedge position: ${error.message}`);
+        }
+      }
+
       // Check liquidation risk
       const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeSize / positionValue;
       if (hedgeMarginUsage > this.LIQUIDATION_BUFFER) {
