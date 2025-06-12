@@ -92,9 +92,9 @@ export class HyperliquidService {
     const assetIndex = meta.universe.findIndex((c) => c.name === coin);
     if (assetIndex === -1) throw new Error(`Asset ${coin} not found in universe`);
     
-    console.log('Asset metadata:', meta.universe[assetIndex]);
-    console.log('Original mark price:', markPrice);
-    console.log('Size:', size.toFixed(4));
+    // console.log('Asset metadata:', meta.universe[assetIndex]);
+    // console.log('Original mark price:', markPrice);
+    // console.log('Size:', size.toFixed(4));
     
  
     const isBuy = isLong;
@@ -117,7 +117,7 @@ export class HyperliquidService {
       grouping: "na" as const,
     };
     
-    console.log('Full order object:', JSON.stringify(order, null, 2));
+    // console.log('Full order object:', JSON.stringify(order, null, 2));
   
     return await this.exchangeClient.order(order);
   }
