@@ -684,30 +684,30 @@ export class UniswapLpService {
   }
 }
 
-async function main() {
-  try {
-    console.log('Testing getPosition method...');
-    // Initialize configuration
-    const config = configuration();
-    const configService = new ConfigService<Config>(config);
+// async function main() {
+//   try {
+//     console.log('Testing getPosition method...');
+//     // Initialize configuration
+//     const config = configuration();
+//     const configService = new ConfigService<Config>(config);
 
-    // Create uniswap service instance
-    const uniswapService = new UniswapLpService(configService);
-    await uniswapService.bootstrap();
+//     // Create uniswap service instance
+//     const uniswapService = new UniswapLpService(configService);
+//     await uniswapService.bootstrap();
 
-    const tokenId = '1004042'; // '1006358';
-    console.log(`Calling getPosition with token ID: ${tokenId}`);
+//     const tokenId = '1004042'; // '1006358';
+//     console.log(`Calling getPosition with token ID: ${tokenId}`);
 
-    const position = await uniswapService.getPosition(tokenId);
+//     const position = await uniswapService.getPosition(tokenId);
 
-    console.log('Position retrieved successfully:');
-    console.log({ position });
-  } catch (error) {
-    console.error(`Test failed: ${error.message}`);
-    throw error;
-  }
-}
+//     console.log('Position retrieved successfully:');
+//     console.log({ position });
+//   } catch (error) {
+//     console.error(`Test failed: ${error.message}`);
+//     throw error;
+//   }
+// }
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+// if (require.main === module) {
+//   main().catch(console.error);
+// }
