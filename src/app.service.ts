@@ -105,7 +105,8 @@ export class AppService {
       // Calculate position metrics
       const wbtcAmount = Number(ethers.formatUnits(position.token0Balance, position.token0.decimals));
       const usdcAmount = Number(ethers.formatUnits(position.token1Balance, position.token1.decimals));
-      const positionValue = wbtcAmount * currentPrice + usdcAmount;
+      let positionValue = wbtcAmount * currentPrice + usdcAmount;
+      positionValue = 26
       
       // Calculate price range based on current price
       const lowerPrice = currentPrice * (1 - this.PRICE_RANGE_PERCENT / 2);
@@ -240,6 +241,8 @@ export class AppService {
           leverage=${
             currentHedgePosition.position.leverage.value
           }x`);
+      } else {
+        this.logger.log('No active hedge position found');
       }
 
       // Open Hyperliquid short position if not already opened
@@ -271,6 +274,7 @@ export class AppService {
         } catch (error) {
           this.logger.error(`Failed to open hedge position: ${error.message}`);
         }
+        return
       }
 
       // Check liquidation risk
