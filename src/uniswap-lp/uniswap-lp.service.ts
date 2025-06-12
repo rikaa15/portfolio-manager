@@ -10,12 +10,17 @@ import {
   CollectFeesParams,
 } from './types';
 import configuration, { Config } from '../config/configuration';
-import { getPoolPriceHistory } from './uniswap-lp.utils';
+import {
+  calculateTokenAmounts,
+  formatPositionAmounts,
+  getPoolPriceHistory,
+} from './uniswap-lp.utils';
 // import { fetchCurrentPoolData, fetchPoolInfo } from './subgraph.client';
 import {
   ERC20_ABI,
   fetchPoolInfoDirect,
   MAX_UINT_128,
+  POOL_ABI,
 } from './contract.client';
 import {
   UNISWAP_CONFIGS,
@@ -122,13 +127,13 @@ export class UniswapLpService {
       this.logger.log(`Signer balance: ${ethers.formatEther(balance)} ETH`);
 
       // Only call position check on mainnet
-      if (this.currentNetwork === 'ethereum') {
-        await this.getWbtcUsdcPosition();
-      } else {
-        this.logger.log(
-          `Skipping position check for ${this.currentNetwork} network`,
-        );
-      }
+      // if (this.currentNetwork === 'ethereum') {
+      //   await this.getWbtcUsdcPosition();
+      // } else {
+      //   this.logger.log(
+      //     `Skipping position check for ${this.currentNetwork} network`,
+      //   );
+      // }
 
       this.logger.log('UniswapLpService initialized successfully');
     } catch (error) {
@@ -262,16 +267,116 @@ export class UniswapLpService {
     try {
       const position = await this.nfpmContract.positions(tokenId);
 
+      // Fetch token information from contracts
+      const token0Contract = new ethers.Contract(
+        position.token0,
+        ERC20_ABI,
+        this.provider,
+      );
+      const token1Contract = new ethers.Contract(
+        position.token1,
+        ERC20_ABI,
+        this.provider,
+      );
+
+      const [
+        token0Decimals,
+        token0Symbol,
+        token0Name,
+        token1Decimals,
+        token1Symbol,
+        token1Name,
+      ] = await Promise.all([
+        token0Contract.decimals(),
+        token0Contract.symbol(),
+        token0Contract.name(),
+        token1Contract.decimals(),
+        token1Contract.symbol(),
+        token1Contract.name(),
+      ]);
+
+      let token0Amount = '0';
+      let token1Amount = '0';
+
+      if (position.liquidity > 0n) {
+        try {
+          const poolContract = new ethers.Contract(
+            this.uniswapConfig.poolAddress,
+            POOL_ABI,
+            this.provider,
+          );
+          const slot0 = await poolContract.slot0();
+          const currentTick = slot0.tick;
+
+          const { amount0, amount1 } = calculateTokenAmounts(
+            position.liquidity,
+            position.tickLower,
+            position.tickUpper,
+            Number(currentTick),
+          );
+
+          token0Amount = amount0.toString();
+          token1Amount = amount1.toString();
+        } catch (error) {
+          this.logger.warn(
+            `Could not calculate token amounts from liquidity: ${error.message}`,
+          );
+        }
+      } else {
+        this.logger.log('Position has 0 liquidity (closed position)');
+      }
+
+      const uncollectedFees0 = position.tokensOwed0.toString();
+      const uncollectedFees1 = position.tokensOwed1.toString();
+
+      const formattedAmounts = formatPositionAmounts(
+        token0Amount,
+        token1Amount,
+        uncollectedFees0,
+        uncollectedFees1,
+        Number(token0Decimals),
+        Number(token1Decimals),
+        token0Symbol,
+        token1Symbol,
+      );
+
+      this.logger.log('=== POSITION SUMMARY ===');
+      this.logger.log(`Position ID: ${tokenId}`);
+      this.logger.log(
+        `Liquidity: ${formattedAmounts.token0Balance} + ${formattedAmounts.token1Balance}`,
+      );
+      this.logger.log(
+        `Uncollected fees: ${formattedAmounts.uncollectedFees0} + ${formattedAmounts.uncollectedFees1}`,
+      );
+
       return {
         tokenId,
-        token0: new Token(this.uniswapConfig.chainId, position.token0, 18),
-        token1: new Token(this.uniswapConfig.chainId, position.token1, 18),
+        token0: new Token(
+          this.uniswapConfig.chainId,
+          position.token0,
+          Number(token0Decimals),
+          token0Symbol,
+          token0Name,
+        ),
+        token1: new Token(
+          this.uniswapConfig.chainId,
+          position.token1,
+          Number(token1Decimals),
+          token1Symbol,
+          token1Name,
+        ),
         fee: position.fee,
         tickLower: position.tickLower,
         tickUpper: position.tickUpper,
         liquidity: position.liquidity.toString(),
-        token0Balance: position.tokensOwed0.toString(),
-        token1Balance: position.tokensOwed1.toString(),
+        token0BalanceRaw: token0Amount,
+        token1BalanceRaw: token1Amount,
+        uncollectedFees0Raw: uncollectedFees0,
+        uncollectedFees1Raw: uncollectedFees1,
+        token0Balance: formattedAmounts.token0Balance,
+        token1Balance: formattedAmounts.token1Balance,
+        uncollectedFees0: formattedAmounts.uncollectedFees0,
+        uncollectedFees1: formattedAmounts.uncollectedFees1,
         feeGrowthInside0LastX128: position.feeGrowthInside0LastX128.toString(),
         feeGrowthInside1LastX128: position.feeGrowthInside1LastX128.toString(),
       };
@@ -577,4 +682,32 @@ export class UniswapLpService {
   async getSignerAddress(): Promise<string> {
     return this.signer.getAddress();
   }
+}
+
+async function main() {
+  try {
+    console.log('Testing getPosition method...');
+    // Initialize configuration
+    const config = configuration();
+    const configService = new ConfigService<Config>(config);
+
+    // Create uniswap service instance
+    const uniswapService = new UniswapLpService(configService);
+    await uniswapService.bootstrap();
+
+    const tokenId = '1004042'; // '1006358';
+    console.log(`Calling getPosition with token ID: ${tokenId}`);
+
+    const position = await uniswapService.getPosition(tokenId);
+
+    console.log('Position retrieved successfully:');
+    console.log({ position });
+  } catch (error) {
+    console.error(`Test failed: ${error.message}`);
+    throw error;
+  }
+}
+
+if (require.main === module) {
+  main().catch(console.error);
 }

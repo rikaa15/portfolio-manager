@@ -8,13 +8,18 @@ export interface LiquidityPosition {
   fee: bigint;
   tickLower: bigint;
   tickUpper: bigint;
-  liquidity: BigNumberish;
-  token0Balance: BigNumberish;
-  token1Balance: BigNumberish;
-  feeGrowthInside0LastX128: BigNumberish;
-  feeGrowthInside1LastX128: BigNumberish;
+  liquidity: string;
+  token0BalanceRaw: string;
+  token1BalanceRaw: string;
+  uncollectedFees0Raw: string;
+  uncollectedFees1Raw: string;
+  token0Balance: string; // e.g., "0.00000485 WBTC"
+  token1Balance: string; // e.g., "0.526934 USDC"
+  uncollectedFees0: string; // e.g., "0 WBTC"
+  uncollectedFees1: string; // e.g., "0 USDC"
+  feeGrowthInside0LastX128: string;
+  feeGrowthInside1LastX128: string;
 }
-
 export interface AddLiquidityParams {
   token0: Token;
   token1: Token;
@@ -42,4 +47,4 @@ export interface CollectFeesParams {
   recipient: string;
   amount0Max: BigNumberish;
   amount1Max: BigNumberish;
-} 
+}
