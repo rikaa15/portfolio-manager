@@ -17,6 +17,10 @@ export interface Config {
       uniswapPositionManager: string;
     };
   };
+  base: {
+    rpcUrl: string;
+    privateKey: string;
+  };
   hyperliquid: {
     privateKey: string;
   };
@@ -38,6 +42,10 @@ export default (): Config => ({
     contracts: {
       uniswapPositionManager: '0x1238536071E1c677A632429e3655c799b22cDA52',
     },
+  },
+  base: {
+    rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
+    privateKey: process.env.BASE_PRIVATE_KEY,
   },
   hyperliquid: {
     privateKey: process.env.HL_KEY || '',
