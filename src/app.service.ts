@@ -11,7 +11,7 @@ import * as moment from 'moment';
 export class AppService {
   private readonly logger = new Logger(AppService.name);
   private readonly WBTC_USDC_POSITION_ID = '1006358';
-  private readonly MONITORING_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
   private readonly FEE_COLLECTION_THRESHOLD = ethers.parseUnits('100', 6); // 100 USDC worth of fees
   
   // Strategy parameters from backtesting
@@ -106,6 +106,20 @@ export class AppService {
       const wbtcAmount = Number(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
       const usdcAmount = Number(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
       const positionValue = wbtcAmount * currentPrice + usdcAmount;
+      
+      // Calculate BTC delta from LP position
+      const lpBtcDelta = wbtcAmount;
+      
+      // Calculate BTC delta from hedge position
+      let hedgeBtcDelta = 0;
+      const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
+      if (currentHedgePosition && currentHedgePosition.position) {
+        hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
+      }
+      
+      // Calculate net BTC delta
+      const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
+      const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
       
       // Calculate price range based on current price
       const lowerPrice = currentPrice * (1 - this.PRICE_RANGE_PERCENT / 2);
@@ -229,10 +243,13 @@ export class AppService {
         Weekly Fees: $${this.weeklyFees.toFixed(2)}
         Weekly Funding Costs: $${this.weeklyFundingCosts.toFixed(2)}
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
+        BTC Delta Metrics:
+        - LP BTC Delta: ${lpBtcDelta.toFixed(4)} BTC
+        - Hedge BTC Delta: ${hedgeBtcDelta.toFixed(4)} BTC
+        - Net BTC Delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position value)
       `);
 
       // Check current hedge position
-      const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
       if(currentHedgePosition) {
         this.logger.log(`Current hedge position (${this.hyperliquidService.walletAddress}):
           size=${currentHedgePosition.position.szi} BTC,
