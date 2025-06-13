@@ -121,6 +121,24 @@ export class AppService {
       const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
       const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
       
+      // Calculate LP APR
+      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
+      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
+      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // usdc
+      const btcFeesValue = Number(ethers.formatUnits(btcFees, position.token0.decimals)) * currentPrice;
+      const usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
+      const totalFeesValue = btcFeesValue + usdcFeesValue;
+      
+      // Calculate time elapsed since position start
+      const positionStartTime = new Date(positionStartDate).getTime();
+      const timeElapsed = (Date.now() - positionStartTime) / (1000 * 60 * 60 * 24); // in days
+      
+      // Calculate APR: (fees / position value) * (365 / days elapsed)
+      const lpApr = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
+      
+      // Calculate net APR including impermanent loss
+      const netApr = lpApr - Math.abs(impermanentLoss);
+      
       // Calculate price range based on current price
       const lowerPrice = currentPrice * (1 - this.PRICE_RANGE_PERCENT / 2);
       const upperPrice = currentPrice * (1 + this.PRICE_RANGE_PERCENT / 2);
@@ -139,15 +157,6 @@ export class AppService {
       } else {
         this.outOfRangeStartTime = null;
       }
-
-      // Check if fees need to be collected
-      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
-      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
-      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // usdc
-      // if (token1Fees >= this.FEE_COLLECTION_THRESHOLD) {
-      //   await this.collectFees();
-      //   this.weeklyFees += Number(ethers.formatUnits(usdcFees, 6));
-      // }
 
       // Calculate token ratios for rebalancing
       const wbtcValue = wbtcAmount * currentPrice;
@@ -247,6 +256,10 @@ export class AppService {
         - LP BTC Delta: ${lpBtcDelta.toFixed(4)} BTC
         - Hedge BTC Delta: ${hedgeBtcDelta.toFixed(4)} BTC
         - Net BTC Delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position value)
+        Performance Metrics:
+        - LP APR: ${lpApr.toFixed(2)}%
+        - Net APR (including IL): ${netApr.toFixed(2)}%
+        - Time Elapsed: ${timeElapsed.toFixed(1)} days
       `);
 
       // Check current hedge position
