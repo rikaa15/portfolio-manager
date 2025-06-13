@@ -103,10 +103,9 @@ export class AppService {
       // console.log('currentPrice:', currentPrice);
 
       // Calculate position metrics
-      const wbtcAmount = Number(ethers.formatUnits(position.token0Balance, position.token0.decimals));
-      const usdcAmount = Number(ethers.formatUnits(position.token1Balance, position.token1.decimals));
-      let positionValue = wbtcAmount * currentPrice + usdcAmount;
-      positionValue = 26
+      const wbtcAmount = Number(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
+      const usdcAmount = Number(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
+      const positionValue = wbtcAmount * currentPrice + usdcAmount;
       
       // Calculate price range based on current price
       const lowerPrice = currentPrice * (1 - this.PRICE_RANGE_PERCENT / 2);
