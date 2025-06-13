@@ -1,10 +1,12 @@
 import { ethers } from 'ethers';
+import { TickMath } from '@uniswap/v3-sdk';
 import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
 import {
   fetchCurrentPoolData,
   fetchPoolDayPrices,
   fetchPoolHourPrices,
 } from './subgraph.client';
+import { LiquidityPosition } from './types';
 
 /**
  * Get pool exchange rate (what Uniswap UI shows as "pool price")
@@ -137,5 +139,138 @@ export async function getPositionInfo(
     tickLower: Number(position.tickLower),
     tickUpper: Number(position.tickUpper),
     liquidity: position.liquidity.toString(),
+  };
+}
+
+export const calculateTokenAmounts = (
+  liquidity: bigint,
+  tickLower: bigint,
+  tickUpper: bigint,
+  currentTick: number,
+): { amount0: bigint; amount1: bigint } => {
+  try {
+    const tickLowerNum = Number(tickLower);
+    const tickUpperNum = Number(tickUpper);
+
+    if (currentTick < tickLowerNum) {
+      const sqrtRatioLower = TickMath.getSqrtRatioAtTick(tickLowerNum);
+      const sqrtRatioUpper = TickMath.getSqrtRatioAtTick(tickUpperNum);
+
+      const sqrtPriceLower = Number(sqrtRatioLower.toString()) / 2 ** 96;
+      const sqrtPriceUpper = Number(sqrtRatioUpper.toString()) / 2 ** 96;
+
+      const amount0 =
+        (liquidity *
+          BigInt(Math.floor((1 / sqrtPriceLower - 1 / sqrtPriceUpper) * 1e8))) /
+        BigInt(1e8);
+      return { amount0, amount1: 0n };
+    } else if (currentTick >= tickUpperNum) {
+      const sqrtRatioLower = TickMath.getSqrtRatioAtTick(tickLowerNum);
+      const sqrtRatioUpper = TickMath.getSqrtRatioAtTick(tickUpperNum);
+
+      const sqrtPriceLower = Number(sqrtRatioLower.toString()) / 2 ** 96;
+      const sqrtPriceUpper = Number(sqrtRatioUpper.toString()) / 2 ** 96;
+
+      const amount1 =
+        (liquidity *
+          BigInt(Math.floor((sqrtPriceUpper - sqrtPriceLower) * 1e6))) /
+        BigInt(1e6);
+      return { amount0: 0n, amount1 };
+    } else {
+      // Current price is in range - both tokens
+      const sqrtRatioCurrent = TickMath.getSqrtRatioAtTick(currentTick);
+      const sqrtRatioLower = TickMath.getSqrtRatioAtTick(tickLowerNum);
+      const sqrtRatioUpper = TickMath.getSqrtRatioAtTick(tickUpperNum);
+
+      const sqrtPriceCurrent = Number(sqrtRatioCurrent.toString()) / 2 ** 96;
+      const sqrtPriceLower = Number(sqrtRatioLower.toString()) / 2 ** 96;
+      const sqrtPriceUpper = Number(sqrtRatioUpper.toString()) / 2 ** 96;
+
+      const amount0 =
+        (liquidity *
+          BigInt(
+            Math.floor((1 / sqrtPriceCurrent - 1 / sqrtPriceUpper) * 1e8),
+          )) /
+        BigInt(1e8);
+      const amount1 =
+        (liquidity *
+          BigInt(Math.floor((sqrtPriceCurrent - sqrtPriceLower) * 1e6))) /
+        BigInt(1e6);
+
+      return { amount0, amount1 };
+    }
+  } catch (error) {
+    console.error(`Error calculating token amounts with SDK: ${error.message}`);
+    return { amount0: 0n, amount1: 0n };
+  }
+};
+export const formatTokenAmount = (
+  amount: bigint | string,
+  decimals: number,
+  symbol: string,
+  maxDecimals: number = 8,
+): string => {
+  const amountStr = typeof amount === 'bigint' ? amount.toString() : amount;
+  const formatted = ethers.formatUnits(amountStr, decimals);
+  const num = parseFloat(formatted);
+
+  // Show 0 as exactly 0
+  if (num === 0) {
+    return `0 ${symbol}`;
+  }
+
+  // For very small amounts, use more decimal places
+  let decimalPlaces = maxDecimals;
+  if (num < 0.000001) {
+    decimalPlaces = Math.max(maxDecimals, decimals); // Use full token decimals for tiny amounts
+  }
+
+  // Remove trailing zeros for cleaner display
+  const limited = parseFloat(num.toFixed(decimalPlaces)).toString();
+  return `${limited} ${symbol}`;
+};
+
+export const formatPositionAmounts = (
+  token0Amount: string,
+  token1Amount: string,
+  uncollectedFees0: string,
+  uncollectedFees1: string,
+  token0Decimals: number,
+  token1Decimals: number,
+  token0Symbol: string,
+  token1Symbol: string,
+) => {
+  return {
+    token0Balance: formatTokenAmount(
+      token0Amount,
+      token0Decimals,
+      token0Symbol,
+    ),
+    token1Balance: formatTokenAmount(
+      token1Amount,
+      token1Decimals,
+      token1Symbol,
+    ),
+    uncollectedFees0: formatTokenAmount(
+      uncollectedFees0,
+      token0Decimals,
+      token0Symbol,
+    ),
+    uncollectedFees1: formatTokenAmount(
+      uncollectedFees1,
+      token1Decimals,
+      token1Symbol,
+    ),
+  };
+};
+
+export interface FormattedLiquidityPosition extends LiquidityPosition {
+  formattedAmounts: {
+    liquidityToken0: string; // e.g., "0.00000485 WBTC"
+    liquidityToken1: string; // e.g., "0.526934 USDC"
+    walletToken0: string; // e.g., "1.25 WBTC"
+    walletToken1: string; // e.g., "5000.0 USDC"
+    uncollectedFees0: string; // e.g., "<0.001 WBTC"
+    uncollectedFees1: string; // e.g., "<0.001 USDC"
   };
 }
