@@ -1,4 +1,6 @@
-import { ethers } from 'ethers';
+// src/aerodrome/aerodrome-backtest.spec.ts
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { fetchPoolInfoDirect } from './contract.client';
 import {
   fetchPoolInfo,
@@ -6,15 +8,12 @@ import {
   PoolInfo,
   PoolDayData,
 } from './subgraph.client';
-import configuration from '../config/configuration';
 import { getTokenPrice } from './coingecko.client';
+import { ethers } from 'ethers';
+import { AppConfigModule } from '../config/config.module';
 
 const POOL_ADDRESS = '0x3e66e55e97ce60096f74b7c475e8249f2d31a9fb'; // cbBTC/USDC Pool
 const INITIAL_INVESTMENT = 100; // $100 USD
-
-const config = configuration();
-const networkName = 'base';
-const networkConfig = config[networkName as keyof typeof config] as any;
 
 const logger = {
   log: (message: string) => {
@@ -194,9 +193,18 @@ async function runAerodromeBacktest(
 }
 
 describe('Aerodrome LP Backtesting', () => {
+  let configService: ConfigService;
   let selectedDay: PoolDayData;
   let selectedDayIndex: number;
   let lpSharePercentage: number;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      imports: [AppConfigModule],
+    }).compile();
+
+    configService = module.get<ConfigService>(ConfigService);
+  });
 
   it('should backtest cbBTC/USDC LP performance using modular subgraph client', async () => {
     await runAerodromeBacktest(
@@ -232,6 +240,7 @@ describe('Aerodrome LP Backtesting', () => {
       return;
     }
 
+    const networkConfig = configService.get('base');
     const provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
     const testDate = formatDate(selectedDay.date);
 
@@ -247,8 +256,6 @@ describe('Aerodrome LP Backtesting', () => {
       const estimatedAeroPrice = await getTokenPrice('AERO');
       const dailyAeroValueUSD = dailyAeroEmissions * estimatedAeroPrice;
       const dailyLPAeroUSD = dailyAeroValueUSD * lpSharePercentage;
-
-      // const totalContractRewardsUSD = contractLPTradingFeesUSD + dailyLPAeroUSD;
 
       const gaugeFees0 = contractData.gauge.fees0 || '0';
       const gaugeFees1 = contractData.gauge.fees1 || '0';
