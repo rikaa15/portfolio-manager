@@ -35,12 +35,17 @@ const formatDate = (unixTimestamp: number): string => {
 /**
  * Calculate impermanent loss percentage
  * Uses the standard AMM formula for constant product pools
+ * For single token IL (like BTC/USDC where USDC stays ~$1):
+ * - Pass only currentToken0Price and initialToken0Price
+ * - Token1 prices will default to 1 (stable)
+ * For two-token IL:
+ * - Pass all 4 parameters
  */
 function calculateImpermanentLoss(
   currentToken0Price: number,
-  currentToken1Price: number,
   initialToken0Price: number,
-  initialToken1Price: number,
+  currentToken1Price: number = 1, // Default to 1 for stable token
+  initialToken1Price: number = 1, // Default to 1 for stable token
 ): number {
   // Price ratio: relative change between token0 and token1 prices
   const priceRatio =
@@ -118,7 +123,9 @@ async function runAerodromeBacktest(
     // Track cumulative values
     let cumulativeFees = 0;
     const initialToken0Price = parseFloat(firstDay.token0Price);
-    const initialToken1Price = parseFloat(firstDay.token1Price);
+
+    // token1 is USDC
+    // const initialToken1Price = parseFloat(firstDay.token1Price);
 
     logger.log('Daily Performance:');
     logger.log('');
@@ -138,14 +145,12 @@ async function runAerodromeBacktest(
 
       // Calculate impermanent loss vs holding strategy
       const currentToken0Price = parseFloat(dayData.token0Price);
-      const currentToken1Price = parseFloat(dayData.token1Price);
+      // token1 is USDC
+      // const currentToken1Price = parseFloat(dayData.token1Price);
       const impermanentLoss = calculateImpermanentLoss(
         currentToken0Price,
-        currentToken1Price,
         initialToken0Price,
-        initialToken1Price,
       );
-
       // Calculate total PnL (position change + fees)
       const positionPnL = currentPositionValue - initialAmount;
       const totalPnL = positionPnL + cumulativeFees;
