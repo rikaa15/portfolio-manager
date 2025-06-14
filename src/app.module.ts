@@ -7,8 +7,6 @@ import { AppConfigModule } from './config/config.module';
 import { FundingService } from './funding/funding.service';
 import { BinanceService } from './binance/binance.service';
 import { DeriveService } from './derive/derive.service';
-import { DeriveService } from './derive/derive.service';
-import { DeriveService } from './derive/derive.service';
 
 @Module({
   imports: [AppConfigModule],

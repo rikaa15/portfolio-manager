@@ -105,7 +105,7 @@ describe('BinanceService', () => {
     }
   });
 
-  it('runs backtest for BTC options over available period', async () => {
+  it('runs backtest for BTC options on Binance over available period', async () => {
     const contracts = await service.getOptionContracts();
     const btcCallOptions = contracts.filter(c => 
       c.underlying === 'BTCUSDT' && 
@@ -119,7 +119,7 @@ describe('BinanceService', () => {
     }
 
     const symbol = btcCallOptions[0].symbol;
-    const positionSize = 10;
+    const positionSize = 1;
     
     console.log(`\n=== BTC Options Backtesting ===`);
     console.log(`${symbol}, Strike Price: $${btcCallOptions[0].strikePrice}`);
