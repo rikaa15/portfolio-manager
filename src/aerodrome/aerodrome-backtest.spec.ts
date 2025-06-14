@@ -2,15 +2,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { fetchPoolInfoDirect } from './contract.client';
-import {
-  fetchPoolInfo,
-  fetchPoolDayData,
-  PoolInfo,
-  PoolDayData,
-} from './subgraph.client';
+import { fetchPoolInfo, fetchPoolDayData } from './subgraph.client';
 import { getTokenPrice } from './coingecko.client';
 import { ethers } from 'ethers';
 import { AppConfigModule } from '../config/config.module';
+import { PoolDayData, PoolInfo } from './types';
 
 const POOL_ADDRESS = '0x3e66e55e97ce60096f74b7c475e8249f2d31a9fb'; // cbBTC/USDC Pool
 const INITIAL_INVESTMENT = 100; // $100 USD
@@ -214,8 +210,8 @@ describe('Aerodrome LP Backtesting', () => {
   it('should backtest cbBTC/USDC LP performance using modular subgraph client', async () => {
     await runAerodromeBacktest(
       POOL_ADDRESS,
-      '2025-05-01',
-      '2025-06-11',
+      '2025-06-01',
+      '2025-06-12',
       INITIAL_INVESTMENT,
     );
 

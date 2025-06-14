@@ -1,5 +1,15 @@
 import 'dotenv/config';
 
+export interface BaseConfig {
+  rpcUrl: string;
+  chainId: number;
+  privateKey: string;
+  contracts: {
+    factory: string;
+    positionManager: string;
+    pools: string[];
+  };
+}
 export interface Config {
   port: number;
   walletAddress: string;
@@ -17,10 +27,7 @@ export interface Config {
       uniswapPositionManager: string;
     };
   };
-  base: {
-    rpcUrl: string;
-    privateKey: string;
-  };
+  base: BaseConfig;
   hyperliquid: {
     privateKey: string;
   };
@@ -45,7 +52,13 @@ export default (): Config => ({
   },
   base: {
     rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
-    privateKey: process.env.BASE_PRIVATE_KEY,
+    chainId: 8453,
+    privateKey: process.env.PRIVATE_KEY,
+    contracts: {
+      factory: '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A',
+      positionManager: '0x827922686190790b37229fd06084350E74485b72',
+      pools: ['0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb'], // 0: default
+    },
   },
   hyperliquid: {
     privateKey: process.env.HL_KEY || '',
