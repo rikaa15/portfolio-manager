@@ -10,7 +10,7 @@ import * as moment from 'moment';
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly WBTC_USDC_POSITION_ID = '1006358';
+  private readonly WBTC_USDC_POSITION_ID = '1009421';
   private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
   private readonly FEE_COLLECTION_THRESHOLD = ethers.parseUnits('100', 6); // 100 USDC worth of fees
   
@@ -119,7 +119,10 @@ export class AppService {
       
       // Calculate net BTC delta
       const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
+      console.log('netBtcDelta:', netBtcDelta);
       const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
+      console.log('netBtcDeltaPercent', netBtcDeltaPercent)
+      this.logger.log(`Net BTC delta: ${netBtcDeltaPercent.toFixed(2)}% of position value`);
       
       // Calculate LP APR
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
