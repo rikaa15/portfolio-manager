@@ -105,7 +105,13 @@ export class AppService {
       // Calculate position metrics
       const wbtcAmount = Number(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
       const usdcAmount = Number(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
-      const positionValue = wbtcAmount * currentPrice + usdcAmount;
+      const wbtcPositionValue = wbtcAmount * currentPrice;
+      const usdcPositionValue = usdcAmount;
+      const positionValue = wbtcPositionValue + usdcPositionValue;
+
+      // Calculate token ratios for rebalancing
+      const wbtcRatio = wbtcPositionValue / positionValue;
+      const ratioDeviation = Math.abs(wbtcRatio - 0.5);
       
       // Calculate BTC delta from LP position
       const lpBtcDelta = wbtcAmount;
@@ -118,10 +124,9 @@ export class AppService {
       }
       
       // Calculate net BTC delta
+      // total BTC exposure combining both LP and hedge positions
       const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
-      console.log('netBtcDelta:', netBtcDelta);
       const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
-      console.log('netBtcDeltaPercent', netBtcDeltaPercent)
       this.logger.log(`Net BTC delta: ${netBtcDeltaPercent.toFixed(2)}% of position value`);
       
       // Calculate LP APR
@@ -160,11 +165,6 @@ export class AppService {
       } else {
         this.outOfRangeStartTime = null;
       }
-
-      // Calculate token ratios for rebalancing
-      const wbtcValue = wbtcAmount * currentPrice;
-      const wbtcRatio = wbtcValue / positionValue;
-      const ratioDeviation = Math.abs(wbtcRatio - 0.5);
 
       // Get current funding rate
       const fundingData = await this.fundingService.getCurrentFundingRate('BTC');
@@ -207,7 +207,6 @@ export class AppService {
           // Apply hedge size limits
           const maxHedgeSize = positionValue * this.MAX_HEDGE_RATIO;
           const finalHedgeSize = Math.min(newHedgeSize, maxHedgeSize);
-          console.log('finalHedgeSize:', finalHedgeSize);
 
           this.lastHedgeRebalance = Date.now();
         }
@@ -274,11 +273,6 @@ export class AppService {
       } else {
         this.logger.log('No active hedge position found');
       }
-
-      // Calculate BTC exposure and target hedge size
-      const usdcValue = usdcAmount;
-      const totalValue = wbtcValue + usdcValue;
-      const btcExposurePercent = wbtcValue / totalValue;
       
       // Start with base hedge size (50% of position value)
       let hedgeSize = positionValue * 0.5;
@@ -295,11 +289,13 @@ export class AppService {
         }
       }
 
+      console.log('wbtcRatio:', wbtcRatio, 'test', Math.abs(wbtcRatio - 0.5));
+
       // Check if we need to adjust the hedge position
       const needsHedgeAdjustment = !currentHedgePosition || 
         !currentHedgePosition.position || 
         parseFloat(currentHedgePosition.position.szi) === 0 ||
-        Math.abs(btcExposurePercent - 0.5) > 0.05 || // >5% deviation from 50/50
+        Math.abs(wbtcRatio - 0.5) > 0.05 || // >5% deviation from 50/50
         currentFundingRate > this.FUNDING_RATE_THRESHOLD; // High funding rate
 
       if (needsHedgeAdjustment) {
@@ -316,7 +312,7 @@ export class AppService {
         }
         
         // Adjust leverage based on deviation from 50/50
-        const deviationFromTarget = Math.abs(btcExposurePercent - 0.5);
+        const deviationFromTarget = Math.abs(wbtcRatio - 0.5);
         if (deviationFromTarget > 0.05) {
           // Increase leverage to correct larger deviations faster
           targetLeverage = Math.min(this.MAX_LEVERAGE, targetLeverage * (1 + deviationFromTarget));
@@ -329,7 +325,7 @@ export class AppService {
         const marginUsage = targetLeverage * (collateral / positionValue);
         if (marginUsage <= this.MAX_MARGIN_USAGE) {
           this.logger.log(`Adjusting hedge position:
-            Current BTC Exposure: ${(btcExposurePercent * 100).toFixed(2)}%
+            Current BTC Exposure: ${(wbtcRatio * 100).toFixed(2)}%
             Target Hedge Size: $${hedgeSize.toFixed(2)}
             Target Leverage: ${targetLeverage.toFixed(2)}x
             Collateral: $${collateral.toFixed(2)}
