@@ -1,5 +1,6 @@
 import axios from 'axios';
 import 'dotenv/config';
+import { PoolDayData, PoolInfo } from './types';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -32,23 +33,6 @@ const POOL_INFO_QUERY = `
   }
 `;
 
-const POOL_PRICE_QUERY = `
-  query PoolPrice($poolId: ID!) {
-    pool(id: $poolId) {
-      token0Price
-      token1Price
-      token0 {
-        symbol
-        decimals
-      }
-      token1 {
-        symbol
-        decimals
-      }
-    }
-  }
-`;
-
 const POOL_DAY_DATA_QUERY = `
   query PoolDayData($poolId: ID!, $startDate: Int!, $endDate: Int!) {
     poolDayDatas(
@@ -70,65 +54,7 @@ const POOL_DAY_DATA_QUERY = `
     }
   }
 `;
-
-const POOL_HOUR_DATA_QUERY = `
-  query PoolHourData($poolId: ID!, $startTime: Int!, $endTime: Int!) {
-    poolHourDatas(
-      where: { 
-        pool: $poolId,
-        periodStartUnix_gte: $startTime,
-        periodStartUnix_lte: $endTime
-      }
-      orderBy: periodStartUnix
-      orderDirection: asc
-      first: 1000
-    ) {
-      periodStartUnix
-      token0Price
-      token1Price
-      tvlUSD
-      volumeUSD
-      feesUSD
-      # CHANGE: Added block fields for historical validation
-    }
-  }
-`;
-
-export interface CurrentPoolData {
-  token0Price: string;
-  token1Price: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-}
-
-export interface PoolInfo {
-  id: string;
-  totalValueLockedUSD: string;
-  liquidity: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-  token0Price: string;
-  token1Price: string;
-}
-
-export interface PoolDayData {
-  date: number;
-  volumeUSD: string;
-  feesUSD: string;
-  tvlUSD: string;
-  token0Price: string;
-  token1Price: string;
-}
-export interface PoolHourData {
-  periodStartUnix: number;
-  token0Price: string;
-  token1Price: string;
-  tvlUSD: string;
-  volumeUSD: string;
-  feesUSD: string;
-}
-
-async function executeQuery(
+export async function executeQuery(
   query: string,
   variables: any,
   operationName?: string,
@@ -165,30 +91,6 @@ async function executeQuery(
 }
 
 /**
- * Get current pool data for price fetching
- * Returns raw data with no processing - useful for quick price checks
- */
-export async function fetchCurrentPoolData(
-  poolAddress: string,
-): Promise<CurrentPoolData> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-
-  const data = await executeQuery(
-    POOL_PRICE_QUERY,
-    {
-      poolId: formattedPoolAddress,
-    },
-    'PoolPrice',
-  );
-
-  if (!data?.pool) {
-    throw new Error('Pool not found');
-  }
-
-  return data.pool;
-}
-
-/**
  * Get comprehensive pool information including TVL and liquidity
  * Used for initial pool analysis and setup
  */
@@ -212,7 +114,6 @@ export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
 
 /**
  * Get historical daily data for backtesting
- * CHANGE: Now includes block number for historical contract validation
  * Returns comprehensive daily metrics including fees, volume, prices, and block info
  */
 export async function fetchPoolDayData(
@@ -238,33 +139,4 @@ export async function fetchPoolDayData(
   }
 
   return data.poolDayDatas;
-}
-
-/**
- * Get historical hourly data for detailed analysis
- * Provides higher granularity data for intraday analysis
- */
-export async function fetchPoolHourData(
-  poolAddress: string,
-  startTime: number,
-  endTime: number,
-): Promise<PoolHourData[]> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-
-  const data = await executeQuery(
-    POOL_HOUR_DATA_QUERY,
-    {
-      poolId: formattedPoolAddress,
-      startTime,
-      endTime,
-    },
-    'PoolHourData',
-  );
-
-  if (!data?.poolHourDatas) {
-    console.error('No pool hour data returned from GraphQL query');
-    return [];
-  }
-
-  return data.poolHourDatas;
 }
