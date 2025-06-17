@@ -274,8 +274,8 @@ export class AppService {
         this.logger.log('No active hedge position found');
       }
       
-      // Start with base hedge size (50% of position value)
-      let hedgeSize = positionValue * 0.5;
+      // Start with base hedge size based on WBTC value in LP pool
+      let hedgeSize = wbtcPositionValue * this.TARGET_HEDGE_RATIO;
       
       // Adjust hedge size based on price position in range
       if (inRange) {
@@ -289,7 +289,9 @@ export class AppService {
         }
       }
 
-      console.log('wbtcRatio:', wbtcRatio, 'test', Math.abs(wbtcRatio - 0.5));
+      // Ensure hedge size doesn't exceed maximum allowed
+      const maxHedgeSize = wbtcPositionValue * this.MAX_HEDGE_RATIO;
+      hedgeSize = Math.min(hedgeSize, maxHedgeSize);
 
       // Check if we need to adjust the hedge position
       const needsHedgeAdjustment = !currentHedgePosition || 
@@ -331,6 +333,14 @@ export class AppService {
             Collateral: $${collateral.toFixed(2)}
             Margin Usage: ${(marginUsage * 100).toFixed(2)}%
           `);
+
+          try {
+            await this.hyperliquidService.closePosition('BTC', false);
+            this.logger.log('Successfully closed previous hedge position');
+          } catch (error) {
+            this.logger.error(`Failed to close hedge position: ${error.message}`);
+            return;
+          }
           
           try {
             await this.hyperliquidService.openPosition({
