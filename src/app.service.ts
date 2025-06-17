@@ -26,17 +26,11 @@ export class AppService {
   private readonly FUNDING_RATE_THRESHOLD = 0.001; // 0.1% per 8h funding rate threshold
   private readonly GAS_THRESHOLD = 20; // $20 gas threshold
   private readonly OUT_OF_RANGE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours in ms
-  private readonly FUNDING_TO_FEES_THRESHOLD = 0.2; // 20% funding to fees ratio
-  private readonly CONSECUTIVE_HIGH_FUNDING_DAYS = 3;
   private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ratio
   private readonly MAX_POSITION_ADJUSTMENT = 0.1; // Maximum 10% position size adjustment per day
 
   // Strategy state
   private outOfRangeStartTime: number | null = null;
-  private consecutiveHighFundingDays = 0;
-  private weeklyFees = 0;
-  private weeklyFundingCosts = 0;
-  private lastWeekReset = Date.now();
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = Date.now();
@@ -214,30 +208,9 @@ export class AppService {
 
       // Monitor funding rates and adjust position
       if (currentFundingRate > this.FUNDING_RATE_THRESHOLD) {
-        this.consecutiveHighFundingDays++;
         // Calculate funding costs (8-hour rate * 3 for daily rate * hedge size * leverage)
         const dailyFundingCost = currentFundingRate * 3 * targetHedgeSize * this.currentHedgeLeverage;
-        this.weeklyFundingCosts += dailyFundingCost;
-      } else {
-        this.consecutiveHighFundingDays = 0;
-      }
-
-      // Weekly metrics check
-      if (Date.now() - this.lastWeekReset >= 7 * 24 * 60 * 60 * 1000) {
-        const fundingToFeesRatio = this.weeklyFundingCosts / this.weeklyFees;
-        
-        // Check if funding costs are too high relative to fees
-        if (this.consecutiveHighFundingDays >= this.CONSECUTIVE_HIGH_FUNDING_DAYS &&
-            fundingToFeesRatio > this.FUNDING_TO_FEES_THRESHOLD) {
-          this.logger.warn('Closing hedge due to excessive funding costs');
-          await this.hyperliquidService.closePosition('BTC', false);
-          this.currentHedgeLeverage = 1; // Reset leverage
-        }
-
-        // Reset weekly tracking
-        this.weeklyFees = 0;
-        this.weeklyFundingCosts = 0;
-        this.lastWeekReset = Date.now();
+        this.logger.log(`Current funding cost: $${dailyFundingCost.toFixed(2)} per day`);
       }
 
       // Log position metrics
@@ -251,8 +224,6 @@ export class AppService {
         Impermanent Loss: ${impermanentLoss}%
         Target Hedge Size: $${targetHedgeSize.toFixed(2)}
         Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
-        Weekly Fees: $${this.weeklyFees.toFixed(2)}
-        Weekly Funding Costs: $${this.weeklyFundingCosts.toFixed(2)}
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
         BTC Delta Metrics:
         - LP BTC Delta: ${lpBtcDelta.toFixed(4)} BTC
@@ -432,9 +403,6 @@ export class AppService {
 
       // Reset strategy state
       this.currentHedgeLeverage = 1;
-      this.weeklyFees = 0;
-      this.weeklyFundingCosts = 0;
-      this.consecutiveHighFundingDays = 0;
       this.outOfRangeStartTime = null;
 
       this.logger.log('Successfully exited position');

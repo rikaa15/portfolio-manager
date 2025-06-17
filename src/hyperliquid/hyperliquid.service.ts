@@ -144,11 +144,11 @@ export class HyperliquidService {
       ? Math.round(markPrice * 2).toString() + ".0"
       : Math.round(markPrice * 0.5).toString() + ".0";
 
-    console.log('Size to close:', size.toFixed(4));
-    console.log('Position size:', szi);
-    console.log('Is buy order:', isBuy);
-    console.log('Mark price:', markPrice);
-    console.log('Close price:', closePrice);
+    // console.log('Size to close:', size.toFixed(4));
+    // console.log('Position size:', szi);
+    // console.log('Is buy order:', isBuy);
+    // console.log('Mark price:', markPrice);
+    // console.log('Close price:', closePrice);
     
     const order = {
       orders: [
