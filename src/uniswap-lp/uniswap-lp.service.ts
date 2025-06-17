@@ -27,6 +27,7 @@ import {
   UniswapNetworkConfig,
   UniswapNetworkName,
 } from './uniswap.config';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class UniswapLpService {
@@ -680,6 +681,51 @@ export class UniswapLpService {
 
   async getSignerAddress(): Promise<string> {
     return this.signer.getAddress();
+  }
+
+  async estimateCollectFees(params: {
+    tokenId: string;
+    recipient: string;
+    amount0Max: bigint;
+    amount1Max: bigint;
+  }): Promise<{
+    gasEstimate: bigint;
+    gasPrice: bigint;
+    estimatedCostInUsd: number;
+  }> {
+    const { tokenId, recipient, amount0Max, amount1Max } = params;
+
+    try {
+      // Get current gas price
+      const gasPrice = await this.provider.getFeeData();
+      if (!gasPrice.gasPrice) {
+        throw new Error('Failed to get gas price');
+      }
+
+      // Estimate gas for collect operation
+      const gasEstimate = await this.nfpmContract.collect.estimateGas({
+        tokenId,
+        recipient,
+        amount0Max,
+        amount1Max,
+      });
+
+      // Calculate estimated cost in USD
+      // Assuming average gas price of 20 gwei and ETH price of $2000
+      const estimatedCostInEth = new Decimal((gasEstimate * gasPrice.gasPrice).toString())
+      .div(ethers.parseEther('1').toString())
+      .toNumber();
+      const estimatedCostInUsd = estimatedCostInEth * 2000; // TODO: Get real ETH price
+
+      return {
+        gasEstimate,
+        gasPrice: gasPrice.gasPrice,
+        estimatedCostInUsd,
+      };
+    } catch (error) {
+      this.logger.error(`Error estimating collect fees gas: ${error.message}`);
+      throw error;
+    }
   }
 }
 

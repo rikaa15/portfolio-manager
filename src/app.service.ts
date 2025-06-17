@@ -12,7 +12,8 @@ export class AppService {
   private readonly logger = new Logger(AppService.name);
   private readonly WBTC_USDC_POSITION_ID = '1009421';
   private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
-  private readonly FEE_COLLECTION_THRESHOLD = ethers.parseUnits('100', 6); // 100 USDC worth of fees
+  private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
+  private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
   
   // Strategy parameters from backtesting
   private readonly PRICE_RANGE_PERCENT = 0.10; // 10% price range
@@ -116,7 +117,6 @@ export class AppService {
       if (currentHedgePosition && currentHedgePosition.position) {
         hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }
-      
       // Calculate net BTC delta
       // total BTC exposure combining both LP and hedge positions
       const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
@@ -345,6 +345,8 @@ export class AppService {
           collateral: hedgeSize / this.currentHedgeLeverage,
         });
       }
+
+      await this.collectFees();
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }
@@ -370,15 +372,18 @@ export class AppService {
   private async collectFees() {
     try {
       const recipientAddress = await this.uniswapLpService.getSignerAddress();
-      
-      await this.uniswapLpService.collectFees({
+      const params = {
         tokenId: this.WBTC_USDC_POSITION_ID,
         recipient: recipientAddress,
-        amount0Max: ethers.MaxUint256, // Collect all WBTC fees
-        amount1Max: ethers.MaxUint256, // Collect all USDC fees
-      });
-
-      this.logger.log('Successfully collected fees');
+        amount0Max: ethers.parseUnits('1000000', 6), // Collect all WBTC fees
+        amount1Max: ethers.parseUnits('1000000', 6), // Collect all USDC fees
+      }
+      const { estimatedCostInUsd } = await this.uniswapLpService.estimateCollectFees(params);
+      if(estimatedCostInUsd < this.FEE_COLLECTION_GAS_THRESHOLD) {
+        // this.logger.log(`Collecting fees, estimated gas cost: $${estimatedCostInUsd.toFixed(2)}...`);
+        // await this.uniswapLpService.collectFees(params);
+        // this.logger.log('Successfully collected fees');
+      }
     } catch (error) {
       this.logger.error(`Error collecting fees: ${error.message}`);
     }

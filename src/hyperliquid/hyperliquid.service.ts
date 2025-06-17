@@ -164,7 +164,7 @@ export class HyperliquidService {
       grouping: "na" as const,
     };
     
-    console.log('Full order object:', JSON.stringify(order, null, 2));
+    // console.log('Full order object:', JSON.stringify(order, null, 2));
   
     return await this.exchangeClient.order(order);
   }
