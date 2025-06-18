@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { Wallet } from 'ethers';
 
@@ -87,13 +88,15 @@ export interface AuthHeaders {
 export class DeriveService {
   private readonly logger = new Logger(DeriveService.name);
   private readonly axiosInstance: AxiosInstance;
-  private readonly baseUrl = 'https://api.lyra.finance';
+  private readonly baseUrl: string;
   private readonly defaultTimeout = 10000;
   private readonly retryAttempts = 2;
   private wallet: Wallet | null = null;
   private deriveWalletAddress: string | null = null;
 
-  constructor() {
+  constructor(private configService: ConfigService) {
+    this.baseUrl = this.configService.get<string>('derive.apiUrl') || 'https://api.lyra.finance';
+    
     this.axiosInstance = axios.create({
       baseURL: this.baseUrl,
       timeout: this.defaultTimeout,
@@ -129,8 +132,8 @@ export class DeriveService {
   }
 
   private initializeAuthentication(): void {
-    const privateKey = process.env.DERIVE_PRIVATE_KEY || process.env.PRIVATE_KEY;
-    const walletAddress = process.env.DERIVE_WALLET_ADDRESS;
+    const privateKey = this.configService.get<string>('derive.privateKey');
+    const walletAddress = this.configService.get<string>('derive.walletAddress');
 
     if (privateKey) {
       try {

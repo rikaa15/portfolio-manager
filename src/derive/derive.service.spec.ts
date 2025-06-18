@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigModule } from '@nestjs/config';
 import { DeriveService } from './derive.service';
 import * as dotenv from 'dotenv';
+import configuration from '../config/configuration';
 
 dotenv.config();
 
@@ -9,6 +11,12 @@ describe('DeriveService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({
+          load: [configuration],
+          isGlobal: true,
+        }),
+      ],
       providers: [DeriveService],
     }).compile();
 

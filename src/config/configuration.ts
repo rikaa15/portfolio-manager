@@ -20,6 +20,11 @@ export interface Config {
   hyperliquid: {
     privateKey: string;
   };
+  derive: {
+    apiUrl: string;
+    privateKey: string;
+    walletAddress: string;
+  };
 }
 
 export default (): Config => ({
@@ -41,5 +46,10 @@ export default (): Config => ({
   },
   hyperliquid: {
     privateKey: process.env.HL_KEY || '',
+  },
+  derive: {
+    apiUrl: 'https://api.lyra.finance',
+    privateKey: process.env.PRIVATE_KEY || '',
+    walletAddress: process.env.DERIVE_WALLET_ADDRESS || '',
   },
 });
