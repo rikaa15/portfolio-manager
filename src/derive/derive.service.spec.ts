@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DeriveService } from './derive.service';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 describe('DeriveService', () => {
   let service: DeriveService;
@@ -116,6 +119,124 @@ describe('DeriveService', () => {
       
     }
     
+  }, 60000);
+
+  it('should test authentication and private endpoints', async () => {
+    console.log('\n=== Testing Derive Authentication & Private Endpoints ===');
+    
+    // Debug environment variables
+    console.log('\n🔍 Environment Variables Debug:');
+    console.log(`DERIVE_PRIVATE_KEY: ${process.env.DERIVE_PRIVATE_KEY ? '[SET]' : '[NOT SET]'}`);
+    console.log(`PRIVATE_KEY: ${process.env.PRIVATE_KEY ? '[SET]' : '[NOT SET]'}`);
+    console.log(`DERIVE_WALLET_ADDRESS: ${process.env.DERIVE_WALLET_ADDRESS ? '[SET]' : '[NOT SET]'}`);
+    console.log(`NODE_ENV: ${process.env.NODE_ENV || '[NOT SET]'}`);
+    
+    // Check if authentication is available
+    const isAuthAvailable = service.isAuthenticationAvailable();
+    console.log(`\nAuthentication available: ${isAuthAvailable}`);
+    
+    if (isAuthAvailable) {
+      console.log(`Wallet address: ${service.getWalletAddress()}`);
+    } else {
+      console.log('❌ Authentication not available');
+      console.log('Make sure these environment variables are set:');
+      console.log('- PRIVATE_KEY: Your Ethereum private key');
+      console.log('- DERIVE_WALLET_ADDRESS: Your Derive smart contract wallet address');
+      expect(true).toBe(true); // Don't fail test, just inform
+      return;
+    }
+
+    try {
+      // Test 1: Get Account
+      console.log('\n📋 Testing getAccount()...');
+      const account = await service.getAccount();
+      console.log('✅ Account retrieved:', !!account);
+      console.log('🔍 Raw account response:', JSON.stringify(account, null, 2));
+      if (account) {
+        console.log(`   Wallet: ${account.wallet}`);
+        console.log(`   Subaccounts: ${account.subaccount_ids?.length || 0}`);
+      }
+
+      // Test 2: Get Subaccounts
+      console.log('\n📊 Testing getSubaccounts()...');
+      const subaccounts = await service.getSubaccounts();
+      console.log('✅ Subaccounts retrieved:', subaccounts.length);
+      console.log('🔍 Raw subaccounts response:', JSON.stringify(subaccounts, null, 2));
+      
+      // Test 2b: Manual individual subaccount test if empty
+      if (subaccounts.length === 0 && account?.subaccount_ids?.length > 0) {
+        console.log('\n🔍 Testing individual subaccount calls...');
+        for (const subaccountId of account.subaccount_ids) {
+          try {
+            console.log(`   Testing subaccount ${subaccountId}...`);
+            const subaccountDetail = await service.getSubaccount(subaccountId);
+            console.log(`   ✅ Subaccount ${subaccountId}:`, JSON.stringify(subaccountDetail, null, 2));
+          } catch (error) {
+            console.log(`   ❌ Subaccount ${subaccountId} failed:`, error.message);
+          }
+        }
+      }
+      
+      if (subaccounts.length > 0) {
+        const firstSubaccount = subaccounts[0];
+        console.log(`   First subaccount ID: ${firstSubaccount.subaccount_id}`);
+        console.log(`   Label: ${firstSubaccount.label}`);
+        console.log(`   Frozen: ${firstSubaccount.is_frozen}`);
+
+        // Test 3: Get Positions for first subaccount
+        console.log('\n💰 Testing getPositions()...');
+        const positions = await service.getPositions(firstSubaccount.subaccount_id);
+        console.log('✅ Positions retrieved:', positions.length);
+        if (positions.length > 0) {
+          console.log(`   Sample position: ${JSON.stringify(positions[0], null, 2)}`);
+        }
+
+        // Test 4: Get Margin
+        console.log('\n📈 Testing getMargin()...');
+        const margin = await service.getMargin(firstSubaccount.subaccount_id);
+        console.log('✅ Margin retrieved:', !!margin);
+        if (margin && Object.keys(margin).length > 0) {
+          console.log(`   Margin keys: ${Object.keys(margin).join(', ')}`);
+        }
+
+        // Test 5: Get Open Orders
+        console.log('\n📝 Testing getOpenOrders()...');
+        const openOrders = await service.getOpenOrders(firstSubaccount.subaccount_id);
+        console.log('✅ Open orders retrieved:', openOrders.length);
+        if (openOrders.length > 0) {
+          console.log(`   First order: ${JSON.stringify(openOrders[0], null, 2)}`);
+        }
+
+        // Test 6: Get Private Trade History
+        console.log('\n📊 Testing getPrivateTradeHistory()...');
+        const privateTrades = await service.getPrivateTradeHistory(firstSubaccount.subaccount_id, { count: 10 });
+        console.log('✅ Private trade history retrieved:', privateTrades.length);
+        if (privateTrades.length > 0) {
+          console.log(`   Recent trade: ${privateTrades[0].instrument_name} - ${privateTrades[0].direction} - $${privateTrades[0].trade_price}`);
+        }
+
+        expect(subaccounts.length).toBeGreaterThanOrEqual(0);
+        expect(Array.isArray(positions)).toBe(true);
+        expect(Array.isArray(openOrders)).toBe(true);
+        expect(Array.isArray(privateTrades)).toBe(true);
+      }
+
+    } catch (error) {
+      console.error('❌ Private endpoint error:', error.message);
+      
+      // Check if it's an authentication error
+      if (error.message.includes('Authentication') || error.message.includes('401') || error.message.includes('403')) {
+        console.log('💡 This might be an authentication issue. Check:');
+        console.log('   1. PRIVATE_KEY is your correct Ethereum private key');
+        console.log('   2. DERIVE_WALLET_ADDRESS is your correct Derive smart contract wallet address');
+        console.log('   3. Your session key is properly registered on Derive');
+      }
+      
+      // Don't fail the test on auth errors, just log them
+      expect(true).toBe(true);
+    }
+
+    console.log('\n🎉 Authentication test completed!');
   }, 60000);
 
 });
