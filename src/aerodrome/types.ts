@@ -72,4 +72,29 @@ export interface PoolDayData {
   tvlUSD: string;
   token0Price: string;
   token1Price: string;
+  tick: string;
+  liquidity: string;
+}
+
+export interface Position {
+  id: string;
+  liquidity: string;
+  owner: string;
+  tickLower: TickData;
+  tickUpper: TickData;
+}
+
+export interface PositionRange {
+  tickLower: number;
+  tickUpper: number;
+  positionType: string;
+}
+
+export interface TickData {
+  tickIdx: string;
+  liquidityGross: string;
+  liquidityNet: string;
+  feeGrowthOutside0X128: string;
+  feeGrowthOutside1X128: string;
+  feesUSD: string;
 }
