@@ -1,6 +1,6 @@
 import axios from 'axios';
 import 'dotenv/config';
-import { PoolDayData, PoolInfo } from './types';
+import { PoolDayData, PoolInfo, Position } from './types';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -51,6 +51,43 @@ const POOL_DAY_DATA_QUERY = `
       tvlUSD
       token0Price
       token1Price
+      tick
+      liquidity
+    }
+  }
+`;
+
+const POOL_POSITIONS_QUERY = `
+  query PoolPositions($poolId: ID!) {
+    positions(
+      where: { 
+        pool: $poolId,
+        liquidity_gt: "0",
+        owner_not: "0x0000000000000000000000000000000000000000"
+      }
+      first: 1000
+      orderBy: liquidity
+      orderDirection: desc
+    ) {
+      id
+      liquidity
+      owner
+      tickLower {
+        tickIdx
+        liquidityGross
+        liquidityNet
+        feeGrowthOutside0X128
+        feeGrowthOutside1X128
+        feesUSD
+      }
+      tickUpper {
+        tickIdx
+        liquidityGross
+        liquidityNet
+        feeGrowthOutside0X128
+        feeGrowthOutside1X128
+        feesUSD
+      }
     }
   }
 `;
@@ -139,4 +176,25 @@ export async function fetchPoolDayData(
   }
 
   return data.poolDayDatas;
+}
+
+export async function fetchPoolPositions(
+  poolAddress: string,
+): Promise<Position[]> {
+  const formattedPoolAddress = poolAddress.toLowerCase();
+
+  const data = await executeQuery(
+    POOL_POSITIONS_QUERY,
+    {
+      poolId: formattedPoolAddress,
+    },
+    'PoolPositions',
+  );
+
+  if (!data?.positions) {
+    console.warn('No position data found for pool');
+    return [];
+  }
+
+  return data.positions;
 }

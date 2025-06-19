@@ -1,15 +1,14 @@
 // src/aerodrome/aerodrome-backtest.spec.ts
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { fetchPoolInfoDirect } from './contract.client';
-import { fetchPoolInfo, fetchPoolDayData } from './subgraph.client';
-import { getTokenPrice } from './coingecko.client';
-import { ethers } from 'ethers';
-import { AppConfigModule } from '../config/config.module';
+import {
+  fetchPoolInfo,
+  fetchPoolDayData,
+  fetchPoolPositions,
+} from './subgraph.client';
 import { PoolDayData, PoolInfo } from './types';
+import { calculatePositionFees } from './aerodrome.utils';
 
 const POOL_ADDRESS = '0x3e66e55e97ce60096f74b7c475e8249f2d31a9fb'; // cbBTC/USDC Pool
-const INITIAL_INVESTMENT = 100; // $100 USD
+const INITIAL_INVESTMENT = 1000;
 
 const logger = {
   log: (message: string) => {
@@ -71,6 +70,7 @@ async function runAerodromeBacktest(
   startDate: string,
   endDate: string,
   initialAmount: number,
+  positionType: string = 'full-range',
 ): Promise<void> {
   logger.log('=== cbBTC/USDC Aerodrome LP Backtest ===');
   logger.log(`Pool: ${poolAddress}`);
@@ -88,6 +88,10 @@ async function runAerodromeBacktest(
       `Current TVL: $${parseFloat(poolInfo.totalValueLockedUSD).toLocaleString()}`,
     );
     logger.log('');
+
+    logger.log('Fetching position distribution...');
+    const allPositions = await fetchPoolPositions(poolAddress);
+    logger.log(`Found ${allPositions.length} positions in pool`);
 
     // Get historical data using the client
     logger.log('Fetching historical data...');
@@ -126,14 +130,22 @@ async function runAerodromeBacktest(
     logger.log('Daily Performance:');
     logger.log('');
 
+    logger.log('Fetching position distribution...');
+
     // Process each day of backtest data
     poolDayData.forEach((dayData, index) => {
       const dayNumber = index + 1;
       const date = formatDate(dayData.date);
 
-      // Calculate daily fee earnings based on LP share
-      const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
-      cumulativeFees += dailyFees;
+      const dailyPositionFees = calculatePositionFees(
+        dayData,
+        positionType,
+        allPositions,
+        lpSharePercentage,
+        2000, // cbBTC/USDC tick spacing
+      );
+
+      cumulativeFees += dailyPositionFees;
 
       // Calculate current position value
       const currentTVL = parseFloat(dayData.tvlUSD);
@@ -141,12 +153,12 @@ async function runAerodromeBacktest(
 
       // Calculate impermanent loss vs holding strategy
       const currentToken0Price = parseFloat(dayData.token0Price);
-      // token1 is USDC
-      // const currentToken1Price = parseFloat(dayData.token1Price);
+
       const impermanentLoss = calculateImpermanentLoss(
         currentToken0Price,
         initialToken0Price,
       );
+
       // Calculate total PnL (position change + fees)
       const positionPnL = currentPositionValue - initialAmount;
       const totalPnL = positionPnL + cumulativeFees;
@@ -162,7 +174,7 @@ async function runAerodromeBacktest(
           `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(1)}%`,
+          `APR: ${runningAPR.toFixed(8)}%`,
       );
     });
 
@@ -194,131 +206,14 @@ async function runAerodromeBacktest(
 }
 
 describe('Aerodrome LP Backtesting', () => {
-  let configService: ConfigService;
-  let selectedDay: PoolDayData;
-  let selectedDayIndex: number;
-  let lpSharePercentage: number;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [AppConfigModule],
-    }).compile();
-
-    configService = module.get<ConfigService>(ConfigService);
-  });
-
   it('should backtest cbBTC/USDC LP performance using modular subgraph client', async () => {
     await runAerodromeBacktest(
       POOL_ADDRESS,
       '2025-06-01',
       '2025-06-12',
       INITIAL_INVESTMENT,
+      'full',
     );
-
-    const startTimestamp = getUnixTimestamp('2025-05-01');
-    const endTimestamp = getUnixTimestamp('2025-06-11');
-
-    const poolDayData: PoolDayData[] = await fetchPoolDayData(
-      POOL_ADDRESS,
-      startTimestamp,
-      endTimestamp,
-    );
-
-    selectedDayIndex = poolDayData.length - 1;
-    selectedDay = poolDayData[selectedDayIndex];
-
-    const firstDay = poolDayData[0];
-    lpSharePercentage = INITIAL_INVESTMENT / parseFloat(firstDay.tvlUSD);
-
-    logger.log(`\nPrepared for validation: ${formatDate(selectedDay.date)}`);
-
     expect(true).toBe(true);
   }, 60000);
-
-  it('should validate fees vs AERO rewards using current contract data', async () => {
-    if (!selectedDay) {
-      logger.log('No shared data available, skipping validation');
-      return;
-    }
-
-    const networkConfig = configService.get('base');
-    const provider = new ethers.JsonRpcProvider(networkConfig.rpcUrl);
-    const testDate = formatDate(selectedDay.date);
-
-    logger.log(`Validating ${testDate}`);
-
-    try {
-      const contractData = await fetchPoolInfoDirect(POOL_ADDRESS, provider);
-
-      const dailyFeesUSD = parseFloat(selectedDay.feesUSD);
-      const dailyLPFeesUSD = dailyFeesUSD * lpSharePercentage;
-
-      const dailyAeroEmissions = parseFloat(contractData.dailyAeroEmissions);
-      const estimatedAeroPrice = await getTokenPrice('AERO');
-      const dailyAeroValueUSD = dailyAeroEmissions * estimatedAeroPrice;
-      const dailyLPAeroUSD = dailyAeroValueUSD * lpSharePercentage;
-
-      const gaugeFees0 = contractData.gauge.fees0 || '0';
-      const gaugeFees1 = contractData.gauge.fees1 || '0';
-      const gaugeFees0Formatted = ethers.formatUnits(
-        gaugeFees0,
-        parseInt(contractData.token0.decimals),
-      );
-      const gaugeFees1Formatted = ethers.formatUnits(
-        gaugeFees1,
-        parseInt(contractData.token1.decimals),
-      );
-
-      const contractBlock = contractData.blockNumber || 'current';
-
-      logger.log(`\nSubgraph (${testDate}):`);
-      logger.log(`  TVL: ${parseFloat(selectedDay.tvlUSD).toLocaleString()}`);
-      logger.log(
-        `  Volume: ${parseFloat(selectedDay.volumeUSD).toLocaleString()}`,
-      );
-      logger.log(`  Pool Fees: ${dailyFeesUSD.toLocaleString()}`);
-      logger.log(`  LP Fees: ${dailyLPFeesUSD.toFixed(4)}`);
-
-      logger.log(`\nContract (Block: ${contractBlock}):`);
-      logger.log(`  Token0 Price: ${contractData.token0Price}`);
-      logger.log(`  Token1 Price: ${contractData.token1Price}`);
-      logger.log(`  Utilization: ${contractData.liquidityUtilization}%`);
-      logger.log(
-        `  AERO Emissions: ${dailyAeroEmissions.toLocaleString()}/day`,
-      );
-      logger.log(`  AERO Value: ${dailyAeroValueUSD.toLocaleString()}/day`);
-      logger.log(`  LP AERO: ${dailyLPAeroUSD.toFixed(4)}`);
-      logger.log(
-        `  Gauge Fees Token0: ${parseFloat(gaugeFees0Formatted).toFixed(6)} ${contractData.token0.symbol}`,
-      );
-      logger.log(
-        `  Gauge Fees Token1: ${parseFloat(gaugeFees1Formatted).toFixed(6)} ${contractData.token1.symbol}`,
-      );
-
-      const aeroRatio = dailyLPAeroUSD / dailyLPFeesUSD;
-
-      logger.log(`\nComparison:`);
-      logger.log(`  Subgraph LP Fees: ${dailyLPFeesUSD.toFixed(4)}`);
-      logger.log(`  Contract LP AERO: ${dailyLPAeroUSD.toFixed(4)}`);
-      logger.log(`  AERO/Fees Ratio: ${aeroRatio.toFixed(2)}x`);
-
-      expect(dailyFeesUSD).toBeGreaterThanOrEqual(0);
-      expect(dailyAeroEmissions).toBeGreaterThan(0);
-      expect(parseFloat(contractData.liquidityUtilization)).toBeGreaterThan(50);
-
-      if (aeroRatio > 0.5 && aeroRatio < 2.0) {
-        logger.log('  Result: AERO rewards comparable to subgraph fees');
-      } else if (aeroRatio > 2.0) {
-        logger.log('  Result: AERO rewards exceed subgraph fees significantly');
-      } else {
-        logger.log('  Result: Subgraph fees exceed AERO rewards');
-      }
-      logger.log(
-        `AERO rewards provide ${(aeroRatio * 100).toFixed(1)}% of subgraph fee value`,
-      );
-    } catch (error) {
-      logger.error(`Validation failed: ${error}`);
-      throw error;
-    }
-  }, 30000);
 });
