@@ -135,11 +135,6 @@ export class AppService {
       if (currentHedgePosition && currentHedgePosition.position) {
         hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }
-      // Calculate net BTC delta
-      // total BTC exposure combining both LP and hedge positions
-      const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
-      const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
-      this.logger.log(`Net BTC delta: ${netBtcDeltaPercent.toFixed(2)}% of position value`);
       
       // Calculate LP APR
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
@@ -244,19 +239,12 @@ export class AppService {
         Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
         BTC Delta Metrics:
-        - LP BTC Delta: ${lpBtcDelta.toFixed(4)} BTC
-        - Hedge BTC Delta: ${hedgeBtcDelta.toFixed(4)} BTC
-        - Net BTC Delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position value)
+        - LP BTC size: ${lpBtcDelta.toFixed(4)} BTC
+        - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
         Performance Metrics:
         - LP APR: ${lpApr.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
         - Time Elapsed: ${timeElapsed.toFixed(1)} days
-        LP Rebalancing Stats:
-        - Rebalance Count: ${this.lpRebalanceCount}
-        - Total Rebalance Gas Cost: $${this.totalLpRebalanceGasCost.toFixed(2)}
-        - Last Rebalance: ${this.lastLpRebalance === Date.now() ? 'Just now' : `${((Date.now() - this.lastLpRebalance) / (1000 * 60 * 60)).toFixed(1)} hours ago`}
-        - Gas Limit: $${this.LP_REBALANCE_GAS_LIMIT}
-        - Cooldown Period: ${(this.LP_REBALANCE_COOLDOWN / (1000 * 60 * 60)).toFixed(1)} hours
       `);
 
       // Check current hedge position
