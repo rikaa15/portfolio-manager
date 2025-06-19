@@ -98,13 +98,13 @@ export class AppService {
       }`);
 
       // Check if LP position needs rebalancing based on price position
-      try {
-        this.logger.log('Checking LP rebalancing...');
-        await this.checkLpRebalancing(currentPrice, position);
-      } catch (error) {
-        this.logger.error(`Error checking LP rebalancing: ${error.message}`);
-        return
-      }
+      // try {
+      //   this.logger.log('Checking LP rebalancing...');
+      //   await this.checkLpRebalancing(currentPrice, position);
+      // } catch (error) {
+      //   this.logger.error(`Error checking LP rebalancing: ${error.message}`);
+      //   return
+      // }
 
       // Calculate impermanent loss
       const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
