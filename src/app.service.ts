@@ -360,7 +360,13 @@ export class AppService {
         });
       }
 
-      await this.collectFees();
+      try {
+        if(totalFeesValue > 0) {
+          await this.collectFees(totalFeesValue);
+        }
+      } catch (error) {
+        this.logger.error(`Error collecting fees: ${error.message}`);
+      }
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }
@@ -383,24 +389,24 @@ export class AppService {
     return (lpValue - holdValue) * 100;
   }
 
-  private async collectFees() {
-    try {
-      const recipientAddress = await this.uniswapLpService.getSignerAddress();
+  private async collectFees(totalFeesValue: number) {
+    const recipientAddress = await this.uniswapLpService.getSignerAddress();
       const params = {
         tokenId: this.WBTC_USDC_POSITION_ID,
         recipient: recipientAddress,
         amount0Max: ethers.parseUnits('1000000', 6), // Collect all WBTC fees
         amount1Max: ethers.parseUnits('1000000', 6), // Collect all USDC fees
       }
-      const { estimatedCostInUsd } = await this.uniswapLpService.estimateCollectFees(params);
-      if(estimatedCostInUsd < this.FEE_COLLECTION_GAS_THRESHOLD) {
-        // this.logger.log(`Collecting fees, estimated gas cost: $${estimatedCostInUsd.toFixed(2)}...`);
-        // await this.uniswapLpService.collectFees(params);
-        // this.logger.log('Successfully collected fees');
+      const { estimatedCostInUsd: gasCost } = await this.uniswapLpService.estimateCollectFees(params);
+      if(gasCost < this.FEE_COLLECTION_GAS_THRESHOLD
+        && totalFeesValue > this.FEE_COLLECTION_THRESHOLD
+      ) {
+        this.logger.log(`Collecting fees, estimated gas cost: $${gasCost.toFixed(2)}...`);
+        await this.uniswapLpService.collectFees(params);
+        this.logger.log('Successfully collected fees');
+      } else {
+        this.logger.log(`Skipping fees collection, gas cost: $${gasCost.toFixed(2)} is too high, or total fees value: $${totalFeesValue.toFixed(2)} is too low`);
       }
-    } catch (error) {
-      this.logger.error(`Error collecting fees: ${error.message}`);
-    }
   }
 
   private async checkLpRebalancing(currentPrice: number, position: any) {
