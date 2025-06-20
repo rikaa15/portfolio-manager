@@ -279,11 +279,27 @@ export class AppService {
       hedgeSize = Math.min(hedgeSize, maxHedgeSize);
 
       // Check if we need to adjust the hedge position
-      const needsHedgeAdjustment = !currentHedgePosition || 
+      let needsHedgeAdjustment = !currentHedgePosition || 
         !currentHedgePosition.position || 
         parseFloat(currentHedgePosition.position.szi) === 0 ||
         Math.abs(wbtcRatio - 0.5) > 0.05 || // >5% deviation from 50/50
         currentFundingRate > this.FUNDING_RATE_THRESHOLD; // High funding rate
+
+      // Additional check: compare current hedge size with calculated hedge size
+      if (currentHedgePosition && currentHedgePosition.position && parseFloat(currentHedgePosition.position.szi) !== 0) {
+        const currentHedgeSize = parseFloat(currentHedgePosition.position.positionValue);
+        const hedgeSizeDifference = Math.abs(currentHedgeSize - hedgeSize);
+        const hedgeSizeDifferencePercent = (hedgeSizeDifference / hedgeSize) * 100;
+        
+        // Only adjust if difference is more than 15%
+        const hedgeAdjustmentThreshold = 15;
+        if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
+          needsHedgeAdjustment = false;
+          this.logger.log(`Hedge adjustment skipped: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
+        } else {
+          this.logger.log(`Hedge adjustment needed: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference > ${hedgeAdjustmentThreshold}% threshold)`);
+        }
+      }
 
       if (needsHedgeAdjustment) {
         // Calculate target leverage based on conditions
