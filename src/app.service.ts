@@ -10,7 +10,7 @@ import * as moment from 'moment';
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly WBTC_USDC_POSITION_ID = '1009421';
+  private readonly WBTC_USDC_POSITION_ID: string;
   private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
   private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
   private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
@@ -53,7 +53,9 @@ export class AppService {
     private readonly hyperliquidService: HyperliquidService,
     private readonly fundingService: FundingService,
     private readonly configService: ConfigService<Config>,
-  ) {}
+  ) {
+    this.WBTC_USDC_POSITION_ID = this.configService.get('uniswap').positionId;
+  }
 
   async bootstrap() {
     this.logger.log('Starting BTC/USDC LP strategy...');
@@ -450,8 +452,10 @@ export class AppService {
       this.outOfRangeStartTime = null;
     }
 
+    this.logger.log('rebalancingNeeded:', rebalancingNeeded);
+
     if (rebalancingNeeded) {
-      await this.executeLpRebalancing(currentPrice, newRangePercent, rebalancingAction);
+      // (currentPrice, newRangePercent, rebalancingAction);
     }
   }
 

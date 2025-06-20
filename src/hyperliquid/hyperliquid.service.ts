@@ -102,7 +102,7 @@ export class HyperliquidService {
     const aggressivePrice = isBuy 
       ? Math.round(markPrice * 2).toString() + ".0"
       : Math.round(markPrice * 0.5).toString() + ".0";
-    
+
     const order = {
       orders: [
         {
@@ -111,7 +111,9 @@ export class HyperliquidService {
           p: aggressivePrice,
           s: size.toFixed(4),
           r: false,
-          t: { limit: { tif: "Ioc" as const } },
+          t: {
+            limit: { tif: "Ioc" as const }
+          },
         },
       ],
       grouping: "na" as const,

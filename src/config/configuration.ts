@@ -13,6 +13,9 @@ export interface BaseConfig {
 export interface Config {
   port: number;
   walletAddress: string;
+  uniswap: {
+    positionId: string;
+  };
   ethereum: {
     rpcUrl: string;
     privateKey: string;
@@ -36,6 +39,9 @@ export interface Config {
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
+  uniswap: {
+    positionId: process.env.UNISWAP_POSITION_ID || '1009421',
+  },
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',
     privateKey: process.env.PRIVATE_KEY || '',
