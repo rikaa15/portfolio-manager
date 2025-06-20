@@ -44,7 +44,7 @@ export class AppService {
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
-  private lastLpRebalance = Date.now();
+  private lastLpRebalance = 0;
   private lpRebalanceCount = 0;
   private totalLpRebalanceGasCost = 0;
 
@@ -81,7 +81,7 @@ export class AppService {
     try {
       // Get current position state
       const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
-      console.log('position:', position);
+      console.log('position:', this.WBTC_USDC_POSITION_ID, position);
 
       // TODO: get from subgraph / api
       const positionStartDate = '2025-06-15';
@@ -100,13 +100,13 @@ export class AppService {
       }`);
 
       // Check if LP position needs rebalancing based on price position
-      // try {
-      //   this.logger.log('Checking LP rebalancing...');
-      //   await this.checkLpRebalancing(currentPrice, position);
-      // } catch (error) {
-      //   this.logger.error(`Error checking LP rebalancing: ${error.message}`);
-      //   return
-      // }
+      try {
+        this.logger.log('Checking LP rebalancing...');
+        await this.checkLpRebalancing(currentPrice, position);
+      } catch (error) {
+        this.logger.error(`Error checking LP rebalancing: ${error.message}`);
+        return
+      }
 
       // Calculate impermanent loss
       const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
@@ -409,17 +409,19 @@ export class AppService {
     const tickUpper = Number(position.tickUpper);
     
     // Convert ticks to prices
-    const lowerPrice = 1.0001 ** tickLower;
-    const upperPrice = 1.0001 ** tickUpper;
+    // price_WBTC_per_USDC = 1.0001^i * 10^(decimals_WBTC - decimals_USDC)
+    const tokensDecimalsDelta = Math.abs(position.token0.decimals - position.token1.decimals);
+    const lowerPrice = 1.0001 ** tickLower * Math.pow(10, tokensDecimalsDelta);
+    const upperPrice = 1.0001 ** tickUpper * Math.pow(10, tokensDecimalsDelta);
+    this.logger.log(`LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`);
 
-    console.log('lowerPrice:', lowerPrice, 'upperPrice:', upperPrice);
-    
     // Calculate price position within current range
     const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
     
     // Check cooldown period
     const timeSinceLastRebalance = Date.now() - this.lastLpRebalance;
     if (timeSinceLastRebalance < this.LP_REBALANCE_COOLDOWN) {
+      this.logger.log('LP rebalancing still in cooldown period');
       return; // Still in cooldown period
     }
 
@@ -452,7 +454,7 @@ export class AppService {
       this.outOfRangeStartTime = null;
     }
 
-    this.logger.log('rebalancingNeeded:', rebalancingNeeded);
+    this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
 
     if (rebalancingNeeded) {
       // (currentPrice, newRangePercent, rebalancingAction);
