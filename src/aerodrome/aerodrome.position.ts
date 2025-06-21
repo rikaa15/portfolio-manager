@@ -174,7 +174,7 @@ export class AerodromePosition {
 
   /**
    * Check if hedge should be adjusted based on token ratio deviation
-   * Following Aaron's strategy: "Rebalance when LP shifts >5% from 50/50"
+   * Following Strategy: "Rebalance when LP shifts >5% from 50/50"
    */
   shouldAdjustHedge(currentToken0Price: number): {
     shouldAdjust: boolean;
@@ -183,7 +183,7 @@ export class AerodromePosition {
     tokenRatio: any;
   } {
     const tokenRatio = this.calculateTokenRatio(currentToken0Price);
-    const shouldAdjust = tokenRatio.deviationFrom50_50 > 0.05; // 5% threshold from Aaron's strategy
+    const shouldAdjust = tokenRatio.deviationFrom50_50 > 0.05; // 5% threshold from Strategy
 
     let adjustmentDirection: 'increase' | 'decrease' | 'none' = 'none';
 

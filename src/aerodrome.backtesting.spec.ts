@@ -111,8 +111,8 @@ async function runCombinedBacktest(
       allPositions,
     );
 
-    // Initialize Hyperliquid position based on Artem's strategy
-    const BASE_HEDGE_RATIO = 0.5; // 50% hedge ratio from Artem's script
+    // Initialize Hyperliquid position based on app.service.spec strategy
+    const BASE_HEDGE_RATIO = 0.5; // 50% hedge ratio from app.service.spec script
     const initialFuturesNotional = initialAmount * BASE_HEDGE_RATIO;
     const initialBtcPrice =
       btcPrices[0]?.close || parseFloat(poolDayData[0].token0Price);
@@ -120,7 +120,7 @@ async function runCombinedBacktest(
     const hyperliquidPosition = new HyperliquidPosition(
       initialFuturesNotional,
       initialBtcPrice,
-      'short', // Start with short to hedge BTC exposure (from Artem's script)
+      'short', // Start with short to hedge BTC exposure (from app.service.spec script)
       1, // Start with 1x leverage
     );
 
@@ -168,17 +168,6 @@ async function runCombinedBacktest(
         return;
       }
 
-      // Token ratio check
-      const hedgeAdjustment =
-        aerodromePosition.shouldAdjustHedge(currentBtcPrice);
-
-      if (hedgeAdjustment.shouldAdjust) {
-        logger.log(
-          `Hedge adjustment needed: ${hedgeAdjustment.adjustmentDirection}`,
-        );
-        // TBD
-      }
-
       // Update Hyperliquid position state
       hyperliquidPosition.updateDaily(
         currentBtcPrice,
@@ -187,7 +176,39 @@ async function runCombinedBacktest(
         impermanentLoss,
       );
 
-      // Check and apply risk limits (from Artem's script)
+      // Token ratio check
+      const hedgeAdjustment =
+        aerodromePosition.shouldAdjustHedge(currentBtcPrice);
+
+      if (hedgeAdjustment.shouldAdjust) {
+        const hedgeSizeChange = hyperliquidPosition.adjustHedgeSize(
+          hedgeAdjustment.adjustmentDirection,
+          hedgeAdjustment.deviation,
+          currentLpValue,
+        );
+
+        logger.log(
+          ` Token Ratio: $${hedgeSizeChange.old.toFixed(0)} → $${hedgeSizeChange.new.toFixed(0)} (${hedgeAdjustment.adjustmentDirection}, ${(hedgeAdjustment.deviation * 100).toFixed(1)}% deviation)`,
+        );
+      }
+
+      // Weekly funding cost monitoring
+      if (dayNumber % 7 === 0) {
+        const weeklyFundingCost = Math.abs(
+          hyperliquidPosition.totalFundingCosts,
+        );
+        const weeklyLpFees = aerodromePosition.fees;
+        const fundingToFeesRatio = weeklyFundingCost / weeklyLpFees;
+
+        if (fundingToFeesRatio > 0.2) {
+          // Strategy's 20% threshold
+          logger.log(
+            `High funding cost: ${(fundingToFeesRatio * 100).toFixed(1)}% of LP fees`,
+          );
+        }
+      }
+
+      // Check and apply risk limits
       if (hyperliquidPosition.checkRiskLimits(currentLpValue)) {
         logger.log(
           `WARNING: Position approaching liquidation buffer on day ${dayNumber}`,
@@ -306,21 +327,8 @@ describe('Aerodrome LP Backtesting with Position Class', () => {
       INITIAL_INVESTMENT,
       hyperliquidService,
       fundingService,
-      'full',
+      'full-range',
     );
     expect(true).toBe(true);
   }, 60000);
-
-  // it('should backtest cbBTC/USDC LP with concentrated position (10%) using real data', async () => {
-  //   await runCombinedBacktest(
-  //     POOL_ADDRESS,
-  //     '2025-06-01',
-  //     '2025-06-12',
-  //     INITIAL_INVESTMENT,
-  //     hyperliquidService,
-  //     fundingService,
-  //     '10%',
-  //   );
-  //   expect(true).toBe(true);
-  // }, 60000);
 });

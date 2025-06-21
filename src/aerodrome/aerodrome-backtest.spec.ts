@@ -209,8 +209,8 @@ describe('Aerodrome LP Backtesting', () => {
   it('should backtest cbBTC/USDC LP performance using modular subgraph client', async () => {
     await runAerodromeBacktest(
       POOL_ADDRESS,
-      '2025-03-01',
-      '2025-06-12',
+      '2025-06-01',
+      '2025-06-20',
       INITIAL_INVESTMENT,
       'full-range',
     );

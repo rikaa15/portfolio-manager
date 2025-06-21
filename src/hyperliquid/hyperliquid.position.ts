@@ -157,6 +157,44 @@ export class HyperliquidPosition {
     }
   }
 
+  /**
+   * Adjust hedge size based on strategy direction and deviation
+   * Returns the old and new hedge sizes for logging/tracking
+   */
+  adjustHedgeSize(
+    direction: 'increase' | 'decrease' | 'none',
+    deviation: number,
+    lpPositionValue: number,
+  ): { old: number; new: number } {
+    if (direction === 'none') {
+      return { old: this.futuresNotional, new: this.futuresNotional };
+    }
+
+    const oldSize = this.futuresNotional;
+
+    // Calculate adjustment factor based on deviation from 50/50
+    // Strategy: more deviation = larger adjustment
+    const adjustmentFactor = Math.min(
+      deviation * 2, // Convert 5% deviation to 10% adjustment factor
+      this.MAX_POSITION_ADJUSTMENT, // Cap at 10% per day
+    );
+
+    if (direction === 'increase') {
+      this.futuresNotional *= 1 + adjustmentFactor;
+    } else {
+      this.futuresNotional *= 1 - adjustmentFactor;
+    }
+
+    // Apply Strategy hedge size limits
+    const maxHedgeSize = lpPositionValue * this.MAX_HEDGE_RATIO; // 75% max
+    this.futuresNotional = Math.min(this.futuresNotional, maxHedgeSize);
+
+    return {
+      old: oldSize,
+      new: this.futuresNotional,
+    };
+  }
+
   // Check risk limits
   checkRiskLimits(lpPositionValue: number): boolean {
     const leverageRatio =
