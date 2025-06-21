@@ -168,6 +168,17 @@ async function runCombinedBacktest(
         return;
       }
 
+      // Token ratio check
+      const hedgeAdjustment =
+        aerodromePosition.shouldAdjustHedge(currentBtcPrice);
+
+      if (hedgeAdjustment.shouldAdjust) {
+        logger.log(
+          `Hedge adjustment needed: ${hedgeAdjustment.adjustmentDirection}`,
+        );
+        // TBD
+      }
+
       // Update Hyperliquid position state
       hyperliquidPosition.updateDaily(
         currentBtcPrice,
@@ -202,6 +213,8 @@ async function runCombinedBacktest(
           `BTC (Aero): ${parseFloat(dayData.token0Price).toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `LP Value: ${currentLpValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `LP Fees: ${(aerodromePosition.fees / dayNumber).toFixed(2)} | ` +
+          `BTC Ratio: ${(hedgeAdjustment.tokenRatio.token0Ratio * 100).toFixed(1)}% | ` +
+          `Deviation: ${(hedgeAdjustment.deviation * 100).toFixed(1)}% | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `Hedge: ${hyperliquidPosition.totalNotional.toLocaleString()} (${hyperliquidPosition.leverage.toFixed(1)}x) | ` +
           `Funding Rate: ${fundingRateData.fundingRate >= 0 ? '+' : ''}${(fundingRateData.fundingRate * 100).toFixed(4)}% | ` +
