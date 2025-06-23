@@ -493,6 +493,8 @@ export class AppService {
     // Calculate new price range
     const newLowerPrice = currentPrice * (1 - newRangePercent / 2);
     const newUpperPrice = currentPrice * (1 + newRangePercent / 2);
+
+    console.log('newLowerPrice', newLowerPrice, 'newUpperPrice', newUpperPrice);
     
     // Convert prices to ticks
     const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
@@ -524,8 +526,7 @@ export class AppService {
     const newWbtcAmount = targetWbtcValue / currentPrice;
     const newUsdcAmount = targetUsdcValue;
 
-    // Add new liquidity with adjusted range
-    await this.uniswapLpService.addLiquidity({
+    const addLiquidityParams = {
       token0: position.token0,
       token1: position.token1,
       fee: Number(position.fee),
@@ -533,11 +534,21 @@ export class AppService {
       tickUpper: newTickUpper,
       amount0Desired: ethers.parseUnits(newWbtcAmount.toFixed(position.token0.decimals), position.token0.decimals),
       amount1Desired: ethers.parseUnits(newUsdcAmount.toFixed(position.token1.decimals), position.token1.decimals),
-      amount0Min: ethers.parseUnits((newWbtcAmount * 0.99).toFixed(position.token0.decimals), position.token0.decimals), // 1% slippage
-      amount1Min: ethers.parseUnits((newUsdcAmount * 0.99).toFixed(position.token1.decimals), position.token1.decimals), // 1% slippage
+      amount0Min: 0, // 1% slippage
+      amount1Min: 0, // 1% slippage
       recipient: await this.uniswapLpService.getSignerAddress(),
       deadline: Math.floor(Date.now() / 1000) + 3600,
-    });
+    }
+
+    this.logger.log(`Adding new liquidity:
+      New WBTC amount: ${newWbtcAmount.toFixed(6)} (${addLiquidityParams.amount0Desired})
+      New USDC amount: ${newUsdcAmount.toFixed(2)} (${addLiquidityParams.amount1Desired})
+      Ticks: ${newTickLower} - ${newTickUpper}
+      Recipient: ${addLiquidityParams.recipient}
+    `);
+
+    // Add new liquidity with adjusted range
+    await this.uniswapLpService.addLiquidity(addLiquidityParams);
 
     // Update rebalancing state
     this.lastLpRebalance = Date.now();
