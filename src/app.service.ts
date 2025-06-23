@@ -149,7 +149,7 @@ export class AppService {
       // Calculate time elapsed since position start
       const positionStartTime = new Date(positionStartDate).getTime();
       const timeElapsed = (Date.now() - positionStartTime) / (1000 * 60 * 60 * 24); // in days
-      
+
       // Calculate APR: (fees / position value) * (365 / days elapsed)
       const lpApr = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
       
@@ -292,7 +292,7 @@ export class AppService {
         const hedgeSizeDifferencePercent = (hedgeSizeDifference / hedgeSize) * 100;
         
         // Only adjust if difference is more than 15%
-        const hedgeAdjustmentThreshold = 15;
+        const hedgeAdjustmentThreshold = 7;
         if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
           needsHedgeAdjustment = false;
           this.logger.log(`Hedge adjustment skipped: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
@@ -479,7 +479,7 @@ export class AppService {
     this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
 
     if (rebalancingNeeded) {
-      // (currentPrice, newRangePercent, rebalancingAction);
+      await this.executeLpRebalancing(currentPrice, newRangePercent, rebalancingAction);
     }
   }
 
@@ -497,21 +497,25 @@ export class AppService {
       // Convert prices to ticks
       const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
       const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
-      
+
       this.logger.log(`Rebalancing LP position:
         Current range: ${(1.0001 ** Number(position.tickLower)).toFixed(2)} - ${(1.0001 ** Number(position.tickUpper)).toFixed(2)}
         New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
         Action: ${action}
       `);
 
-      // Remove current liquidity
-      await this.uniswapLpService.removeLiquidity({
-        tokenId: this.WBTC_USDC_POSITION_ID,
-        liquidity: position.liquidity,
-        amount0Min: 0,
-        amount1Min: 0,
-        deadline: Math.floor(Date.now() / 1000) + 3600,
-      });
+      if(Number(position.liquidity) > 0) {
+        // Remove current liquidity
+        this.logger.log('LP: Removing current liquidity...');
+        await this.uniswapLpService.removeLiquidity({
+          tokenId: this.WBTC_USDC_POSITION_ID,
+          liquidity: position.liquidity,
+          amount0Min: 0,
+          amount1Min: 0,
+          deadline: Math.floor(Date.now() / 1000) + 3600,
+        });
+        this.logger.log('LP: Successfully removed current liquidity');
+      }
 
       // Calculate new liquidity amounts based on current price
       const wbtcAmount = Number(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
