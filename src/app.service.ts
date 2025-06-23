@@ -31,6 +31,7 @@ export class AppService {
   private readonly MAX_POSITION_ADJUSTMENT = 0.1; // Maximum 10% position size adjustment per day
 
   // LP Rebalancing parameters
+  private readonly LP_TARGET_POSITION_VALUE = 50 // $70 amount of WBTC in LP position
   private readonly LP_REBALANCE_GAS_LIMIT = 10; // $10 gas limit for rebalancing
   private readonly LP_REBALANCE_COOLDOWN = 4 * 60 * 60 * 1000; // 4 hours between rebalances
   private readonly LP_REBALANCE_MAX_SIZE = 0.20; // 20% max position change per rebalance
@@ -105,7 +106,7 @@ export class AppService {
         await this.checkLpRebalancing(currentPrice, position);
       } catch (error) {
         this.logger.error(`Error checking LP rebalancing: ${error.message}`);
-        return
+        throw error;
       }
 
       // Calculate impermanent loss
@@ -484,79 +485,70 @@ export class AppService {
   }
 
   private async executeLpRebalancing(currentPrice: number, newRangePercent: number, action: string) {
-    try {
-      this.logger.log(`Executing LP rebalancing: ${action}`);
-      
-      // Get current position
-      const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
-      
-      // Calculate new price range
-      const newLowerPrice = currentPrice * (1 - newRangePercent / 2);
-      const newUpperPrice = currentPrice * (1 + newRangePercent / 2);
-      
-      // Convert prices to ticks
-      const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
-      const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
+    this.logger.log(`Executing LP rebalancing: ${action}`);
+    
+    // Get current position
+    const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
+    
+    // Calculate new price range
+    const newLowerPrice = currentPrice * (1 - newRangePercent / 2);
+    const newUpperPrice = currentPrice * (1 + newRangePercent / 2);
+    
+    // Convert prices to ticks
+    const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
+    const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
 
-      this.logger.log(`Rebalancing LP position:
-        Current range: ${(1.0001 ** Number(position.tickLower)).toFixed(2)} - ${(1.0001 ** Number(position.tickUpper)).toFixed(2)}
-        New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
-        Action: ${action}
-      `);
+    this.logger.log(`Rebalancing LP position:
+      Current range: ${(1.0001 ** Number(position.tickLower)).toFixed(2)} - ${(1.0001 ** Number(position.tickUpper)).toFixed(2)}
+      New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
+      Action: ${action}
+    `);
 
-      if(Number(position.liquidity) > 0) {
-        // Remove current liquidity
-        this.logger.log('LP: Removing current liquidity...');
-        await this.uniswapLpService.removeLiquidity({
-          tokenId: this.WBTC_USDC_POSITION_ID,
-          liquidity: position.liquidity,
-          amount0Min: 0,
-          amount1Min: 0,
-          deadline: Math.floor(Date.now() / 1000) + 3600,
-        });
-        this.logger.log('LP: Successfully removed current liquidity');
-      }
-
-      // Calculate new liquidity amounts based on current price
-      const wbtcAmount = Number(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
-      const usdcAmount = Number(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
-      
-      // For simplicity, use equal value amounts
-      const totalValue = (wbtcAmount * currentPrice) + usdcAmount;
-      const targetWbtcValue = totalValue * 0.5;
-      const targetUsdcValue = totalValue * 0.5;
-      
-      const newWbtcAmount = targetWbtcValue / currentPrice;
-      const newUsdcAmount = targetUsdcValue;
-
-      // Add new liquidity with adjusted range
-      await this.uniswapLpService.addLiquidity({
-        token0: position.token0,
-        token1: position.token1,
-        fee: Number(position.fee),
-        tickLower: newTickLower,
-        tickUpper: newTickUpper,
-        amount0Desired: ethers.parseUnits(newWbtcAmount.toString(), position.token0.decimals),
-        amount1Desired: ethers.parseUnits(newUsdcAmount.toString(), position.token1.decimals),
-        amount0Min: ethers.parseUnits((newWbtcAmount * 0.99).toString(), position.token0.decimals), // 1% slippage
-        amount1Min: ethers.parseUnits((newUsdcAmount * 0.99).toString(), position.token1.decimals), // 1% slippage
-        recipient: await this.uniswapLpService.getSignerAddress(),
+    if(Number(position.liquidity) > 0) {
+      // Remove current liquidity
+      this.logger.log('LP: Removing current liquidity...');
+      await this.uniswapLpService.removeLiquidity({
+        tokenId: this.WBTC_USDC_POSITION_ID,
+        liquidity: position.liquidity,
+        amount0Min: 0,
+        amount1Min: 0,
         deadline: Math.floor(Date.now() / 1000) + 3600,
       });
-
-      // Update rebalancing state
-      this.lastLpRebalance = Date.now();
-      this.lpRebalanceCount++;
-
-      this.logger.log(`LP rebalancing completed successfully:
-        Action: ${action}
-        New WBTC amount: ${newWbtcAmount.toFixed(6)}
-        New USDC amount: ${newUsdcAmount.toFixed(2)}
-        Total rebalances: ${this.lpRebalanceCount}
-      `);
-    } catch (error) {
-      this.logger.error(`Error executing LP rebalancing: ${error.message}`);
+      this.logger.log('LP: Successfully removed current liquidity');
     }
+
+    // Calculate new liquidity amounts based on target position value
+    const targetWbtcValue = this.LP_TARGET_POSITION_VALUE / 2;
+    const targetUsdcValue = this.LP_TARGET_POSITION_VALUE / 2;
+    
+    const newWbtcAmount = targetWbtcValue / currentPrice;
+    const newUsdcAmount = targetUsdcValue;
+
+    // Add new liquidity with adjusted range
+    await this.uniswapLpService.addLiquidity({
+      token0: position.token0,
+      token1: position.token1,
+      fee: Number(position.fee),
+      tickLower: newTickLower,
+      tickUpper: newTickUpper,
+      amount0Desired: ethers.parseUnits(newWbtcAmount.toFixed(position.token0.decimals), position.token0.decimals),
+      amount1Desired: ethers.parseUnits(newUsdcAmount.toFixed(position.token1.decimals), position.token1.decimals),
+      amount0Min: ethers.parseUnits((newWbtcAmount * 0.99).toFixed(position.token0.decimals), position.token0.decimals), // 1% slippage
+      amount1Min: ethers.parseUnits((newUsdcAmount * 0.99).toFixed(position.token1.decimals), position.token1.decimals), // 1% slippage
+      recipient: await this.uniswapLpService.getSignerAddress(),
+      deadline: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    // Update rebalancing state
+    this.lastLpRebalance = Date.now();
+    this.lpRebalanceCount++;
+
+    this.logger.log(`LP rebalancing completed successfully:
+      Action: ${action}
+      New WBTC amount: ${newWbtcAmount.toFixed(6)}
+      New USDC amount: ${newUsdcAmount.toFixed(2)}
+      Total rebalances: ${this.lpRebalanceCount}
+    `);
   }
 
   private async exitPosition() {
