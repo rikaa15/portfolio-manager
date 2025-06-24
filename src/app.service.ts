@@ -10,7 +10,7 @@ import * as moment from 'moment';
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly WBTC_USDC_POSITION_ID: string;
+  private WBTC_USDC_POSITION_ID: string;
   private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
   private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
   private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
@@ -453,7 +453,10 @@ export class AppService {
     let newRangePercent = 0.10; // Default 10% range
 
     // Scenario 1: Price near upper or lower range boundary (98-100% of range)
-    if (pricePosition <= this.LP_REBALANCE_BOUNDARY_THRESHOLD || pricePosition >= (1 - this.LP_REBALANCE_BOUNDARY_THRESHOLD)) {
+    if (
+      pricePosition <= this.LP_REBALANCE_BOUNDARY_THRESHOLD
+      || pricePosition >= (1 - this.LP_REBALANCE_BOUNDARY_THRESHOLD)
+    ) {
       rebalancingNeeded = true;
       rebalancingAction = 'boundary_rebalance';
       newRangePercent = 0.10; // Current price ± 10%
@@ -463,7 +466,9 @@ export class AppService {
     }
     
     // Scenario 2: Price out of range (>1 hour)
+    const isLiquidityZero = Number(position.liquidity) === 0;
     const isOutOfRange = currentPrice < lowerPrice || currentPrice > upperPrice;
+
     if (isOutOfRange) {
       if (!this.outOfRangeStartTime) {
         this.outOfRangeStartTime = Date.now();
@@ -475,6 +480,10 @@ export class AppService {
       }
     } else {
       this.outOfRangeStartTime = null;
+    }
+
+    if(isLiquidityZero) {
+      rebalancingNeeded = true;
     }
 
     this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
@@ -509,14 +518,23 @@ export class AppService {
     if(Number(position.liquidity) > 0) {
       // Remove current liquidity
       this.logger.log('LP: Removing current liquidity...');
-      await this.uniswapLpService.removeLiquidity({
+      const removeLiquidityTxHash = await this.uniswapLpService.removeLiquidity({
         tokenId: this.WBTC_USDC_POSITION_ID,
         liquidity: position.liquidity,
         amount0Min: 0,
         amount1Min: 0,
         deadline: Math.floor(Date.now() / 1000) + 3600,
       });
-      this.logger.log('LP: Successfully removed current liquidity');
+      this.logger.log(`LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`);
+
+      this.logger.log('LP: Collecting fees...');
+      const collectFeesTxHash = await this.uniswapLpService.collectFees({
+        tokenId: this.WBTC_USDC_POSITION_ID,
+        recipient: await this.uniswapLpService.getSignerAddress(),
+        amount0Max: ethers.parseUnits('10000000', 6),
+        amount1Max: ethers.parseUnits('10000000', 6),
+      });
+      this.logger.log(`Fees collected: ${collectFeesTxHash}`);
     }
 
     // Calculate new liquidity amounts based on target position value
@@ -530,8 +548,8 @@ export class AppService {
       token0: position.token0,
       token1: position.token1,
       fee: Number(position.fee),
-      tickLower: newTickLower,
-      tickUpper: newTickUpper,
+      tickLower: -887220, // newTickLower,
+      tickUpper: 887220, newTickUpper,
       amount0Desired: ethers.parseUnits(newWbtcAmount.toFixed(position.token0.decimals), position.token0.decimals),
       amount1Desired: ethers.parseUnits(newUsdcAmount.toFixed(position.token1.decimals), position.token1.decimals),
       amount0Min: 0, // 1% slippage
@@ -541,14 +559,17 @@ export class AppService {
     }
 
     this.logger.log(`Adding new liquidity:
-      New WBTC amount: ${newWbtcAmount.toFixed(6)} (${addLiquidityParams.amount0Desired})
-      New USDC amount: ${newUsdcAmount.toFixed(2)} (${addLiquidityParams.amount1Desired})
-      Ticks: ${newTickLower} - ${newTickUpper}
+      New WBTC amount: ${newWbtcAmount.toFixed(position.token0.decimals)} (${addLiquidityParams.amount0Desired})
+      New USDC amount: ${newUsdcAmount.toFixed(position.token1.decimals)} (${addLiquidityParams.amount1Desired})
+      Ticks: ${addLiquidityParams.tickLower} - ${addLiquidityParams.tickUpper}
       Recipient: ${addLiquidityParams.recipient}
+      Fee: ${addLiquidityParams.fee}
     `);
 
     // Add new liquidity with adjusted range
-    await this.uniswapLpService.addLiquidity(addLiquidityParams);
+    const tokenId = await this.uniswapLpService.addLiquidity(addLiquidityParams);
+    this.WBTC_USDC_POSITION_ID = tokenId;
+    this.logger.log(`LP: Successfully added new liquidity, token ID: ${tokenId}`);
 
     // Update rebalancing state
     this.lastLpRebalance = Date.now();

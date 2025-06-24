@@ -387,59 +387,54 @@ export class UniswapLpService {
   }
 
   async addLiquidity(params: AddLiquidityParams): Promise<string> {
-    try {
-      this.logger.log('Approving tokens for liquidity addition...');
+    this.logger.log('Approving tokens for liquidity addition...');
 
-      await Promise.all([
-        this.approveToken(params.token0.address, BigInt(params.amount0Desired)),
-        this.approveToken(params.token1.address, BigInt(params.amount1Desired)),
-      ]);
+    await Promise.all([
+      this.approveToken(params.token0.address, BigInt(params.amount0Desired)),
+      this.approveToken(params.token1.address, BigInt(params.amount1Desired)),
+    ]);
 
-      const tx = await this.nfpmContract.connect(this.signer).mint({
-        token0: params.token0.address,
-        token1: params.token1.address,
-        fee: params.fee,
-        tickLower: params.tickLower,
-        tickUpper: params.tickUpper,
-        amount0Desired: params.amount0Desired,
-        amount1Desired: params.amount1Desired,
-        amount0Min: params.amount0Min,
-        amount1Min: params.amount1Min,
-        recipient: params.recipient,
-        deadline: params.deadline,
-      });
+    const tx = await this.nfpmContract.connect(this.signer).mint({
+      token0: params.token0.address,
+      token1: params.token1.address,
+      fee: params.fee,
+      tickLower: params.tickLower,
+      tickUpper: params.tickUpper,
+      amount0Desired: params.amount0Desired,
+      amount1Desired: params.amount1Desired,
+      amount0Min: params.amount0Min,
+      amount1Min: params.amount1Min,
+      recipient: params.recipient,
+      deadline: params.deadline,
+    });
 
-      const receipt = await tx.wait();
-      let tokenId: string | undefined;
+    const receipt = await tx.wait();
+    let tokenId: string | undefined;
 
-      for (const log of receipt.logs) {
-        try {
-          const parsed = this.nfpmContract.interface.parseLog(log);
-          if (
-            parsed &&
-            (parsed.name === 'Transfer' || parsed.name === 'IncreaseLiquidity')
-          ) {
-            if (parsed.args.tokenId) {
-              tokenId = parsed.args.tokenId.toString();
-              break;
-            }
+    for (const log of receipt.logs) {
+      try {
+        const parsed = this.nfpmContract.interface.parseLog(log);
+        if (
+          parsed &&
+          (parsed.name === 'Transfer' || parsed.name === 'IncreaseLiquidity')
+        ) {
+          if (parsed.args.tokenId) {
+            tokenId = parsed.args.tokenId.toString();
+            break;
           }
-        } catch {
-          // Skip logs that can't be parsed
-          continue;
         }
+      } catch {
+        // Skip logs that can't be parsed
+        continue;
       }
-
-      if (!tokenId) {
-        throw new Error('Could not find token ID in transaction receipt');
-      }
-
-      this.logger.log(`Liquidity added successfully. Token ID: ${tokenId}`);
-      return tokenId;
-    } catch (error) {
-      this.logger.error(`Failed to add liquidity: ${error.message}`);
-      throw error;
     }
+
+    if (!tokenId) {
+      throw new Error('Could not find token ID in transaction receipt');
+    }
+
+    this.logger.log(`Liquidity added successfully. Token ID: ${tokenId}`);
+    return tokenId;
   }
 
   async removeLiquidity(params: RemoveLiquidityParams): Promise<void> {
@@ -458,6 +453,7 @@ export class UniswapLpService {
       this.logger.log(
         `Liquidity decreased successfully. Transaction: ${tx.hash}`,
       );
+      return tx.hash;
     } catch (error) {
       this.logger.error(`Failed to remove liquidity: ${error.message}`);
       throw error;
@@ -474,8 +470,25 @@ export class UniswapLpService {
       });
 
       await tx.wait();
+      return tx.hash;
     } catch (error) {
       this.logger.error(`Failed to collect fees: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async closeLPPosition(recipient: string, params: RemoveLiquidityParams): Promise<void> {
+    try {
+      await this.removeLiquidity(params)
+      await this.collectFees({
+        tokenId: params.tokenId,
+        recipient: recipient,
+        amount0Max: ethers.MaxUint256,
+        amount1Max: ethers.MaxUint256,
+      })
+      this.logger.log(`LP position closed successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to close LP position: ${error.message}`);
       throw error;
     }
   }
