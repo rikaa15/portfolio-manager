@@ -10,9 +10,10 @@ import * as moment from 'moment';
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly WBTC_USDC_POSITION_ID = '1009421';
+  private WBTC_USDC_POSITION_ID: string;
   private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
-  private readonly FEE_COLLECTION_THRESHOLD = ethers.parseUnits('100', 6); // 100 USDC worth of fees
+  private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
+  private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
   
   // Strategy parameters from backtesting
   private readonly PRICE_RANGE_PERCENT = 0.10; // 10% price range
@@ -26,28 +27,36 @@ export class AppService {
   private readonly FUNDING_RATE_THRESHOLD = 0.001; // 0.1% per 8h funding rate threshold
   private readonly GAS_THRESHOLD = 20; // $20 gas threshold
   private readonly OUT_OF_RANGE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours in ms
-  private readonly FUNDING_TO_FEES_THRESHOLD = 0.2; // 20% funding to fees ratio
-  private readonly CONSECUTIVE_HIGH_FUNDING_DAYS = 3;
   private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ratio
   private readonly MAX_POSITION_ADJUSTMENT = 0.1; // Maximum 10% position size adjustment per day
 
+  // LP Rebalancing parameters
+  private readonly LP_TARGET_POSITION_VALUE = 50 // $70 amount of WBTC in LP position
+  private readonly LP_REBALANCE_GAS_LIMIT = 10; // $10 gas limit for rebalancing
+  private readonly LP_REBALANCE_COOLDOWN = 4 * 60 * 60 * 1000; // 4 hours between rebalances
+  private readonly LP_REBALANCE_MAX_SIZE = 0.20; // 20% max position change per rebalance
+  private readonly LP_REBALANCE_BOUNDARY_THRESHOLD = 0.02; // 2% from range boundary
+
   // Strategy state
   private outOfRangeStartTime: number | null = null;
-  private consecutiveHighFundingDays = 0;
-  private weeklyFees = 0;
-  private weeklyFundingCosts = 0;
-  private lastWeekReset = Date.now();
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = Date.now();
   private currentHedgeLeverage = 1;
+
+  // LP Rebalancing state
+  private lastLpRebalance = 0;
+  private lpRebalanceCount = 0;
+  private totalLpRebalanceGasCost = 0;
 
   constructor(
     private readonly uniswapLpService: UniswapLpService,
     private readonly hyperliquidService: HyperliquidService,
     private readonly fundingService: FundingService,
     private readonly configService: ConfigService<Config>,
-  ) {}
+  ) {
+    this.WBTC_USDC_POSITION_ID = this.configService.get('uniswap').positionId;
+  }
 
   async bootstrap() {
     this.logger.log('Starting BTC/USDC LP strategy...');
@@ -73,10 +82,10 @@ export class AppService {
     try {
       // Get current position state
       const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
-      console.log('position:', position);
+      console.log('position:', this.WBTC_USDC_POSITION_ID, position);
 
       // TODO: get from subgraph / api
-      const positionStartDate = '2025-06-10';
+      const positionStartDate = '2025-06-15';
       const positionEndDate = moment().format('YYYY-MM-DD');
       const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
       if(poolPriceHistory.length === 0) {
@@ -85,13 +94,20 @@ export class AppService {
       }
       const initialPrice = poolPriceHistory[0].token1Price;
       const currentPrice = poolPriceHistory[poolPriceHistory.length - 1].token1Price;
-      this.logger.log(`Pool price history: ${
-        poolPriceHistory.length
-      } days, initial BTC price: ${
+      this.logger.log(`BTC price (initial): ${
         initialPrice
-      }, current price: ${
+      }, current: ${
         currentPrice
       }`);
+
+      // Check if LP position needs rebalancing based on price position
+      try {
+        this.logger.log('Checking LP rebalancing...');
+        await this.checkLpRebalancing(currentPrice, position);
+      } catch (error) {
+        this.logger.error(`Error checking LP rebalancing: ${error.message}`);
+        throw error;
+      }
 
       // Calculate impermanent loss
       const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
@@ -123,12 +139,6 @@ export class AppService {
         hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }
       
-      // Calculate net BTC delta
-      // total BTC exposure combining both LP and hedge positions
-      const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
-      const netBtcDeltaPercent = (netBtcDelta * currentPrice / positionValue) * 100;
-      this.logger.log(`Net BTC delta: ${netBtcDeltaPercent.toFixed(2)}% of position value`);
-      
       // Calculate LP APR
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
       const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
@@ -140,7 +150,7 @@ export class AppService {
       // Calculate time elapsed since position start
       const positionStartTime = new Date(positionStartDate).getTime();
       const timeElapsed = (Date.now() - positionStartTime) / (1000 * 60 * 60 * 24); // in days
-      
+
       // Calculate APR: (fees / position value) * (365 / days elapsed)
       const lpApr = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
       
@@ -214,30 +224,9 @@ export class AppService {
 
       // Monitor funding rates and adjust position
       if (currentFundingRate > this.FUNDING_RATE_THRESHOLD) {
-        this.consecutiveHighFundingDays++;
         // Calculate funding costs (8-hour rate * 3 for daily rate * hedge size * leverage)
         const dailyFundingCost = currentFundingRate * 3 * targetHedgeSize * this.currentHedgeLeverage;
-        this.weeklyFundingCosts += dailyFundingCost;
-      } else {
-        this.consecutiveHighFundingDays = 0;
-      }
-
-      // Weekly metrics check
-      if (Date.now() - this.lastWeekReset >= 7 * 24 * 60 * 60 * 1000) {
-        const fundingToFeesRatio = this.weeklyFundingCosts / this.weeklyFees;
-        
-        // Check if funding costs are too high relative to fees
-        if (this.consecutiveHighFundingDays >= this.CONSECUTIVE_HIGH_FUNDING_DAYS &&
-            fundingToFeesRatio > this.FUNDING_TO_FEES_THRESHOLD) {
-          this.logger.warn('Closing hedge due to excessive funding costs');
-          await this.hyperliquidService.closePosition('BTC', false);
-          this.currentHedgeLeverage = 1; // Reset leverage
-        }
-
-        // Reset weekly tracking
-        this.weeklyFees = 0;
-        this.weeklyFundingCosts = 0;
-        this.lastWeekReset = Date.now();
+        this.logger.log(`Current funding cost: $${dailyFundingCost.toFixed(2)} per day`);
       }
 
       // Log position metrics
@@ -251,13 +240,10 @@ export class AppService {
         Impermanent Loss: ${impermanentLoss}%
         Target Hedge Size: $${targetHedgeSize.toFixed(2)}
         Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
-        Weekly Fees: $${this.weeklyFees.toFixed(2)}
-        Weekly Funding Costs: $${this.weeklyFundingCosts.toFixed(2)}
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
         BTC Delta Metrics:
-        - LP BTC Delta: ${lpBtcDelta.toFixed(4)} BTC
-        - Hedge BTC Delta: ${hedgeBtcDelta.toFixed(4)} BTC
-        - Net BTC Delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position value)
+        - LP BTC size: ${lpBtcDelta.toFixed(4)} BTC
+        - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
         Performance Metrics:
         - LP APR: ${lpApr.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
@@ -274,8 +260,8 @@ export class AppService {
         this.logger.log('No active hedge position found');
       }
       
-      // Start with base hedge size (50% of position value)
-      let hedgeSize = positionValue * 0.5;
+      // Start with base hedge size based on WBTC value in LP pool
+      let hedgeSize = wbtcPositionValue * this.TARGET_HEDGE_RATIO;
       
       // Adjust hedge size based on price position in range
       if (inRange) {
@@ -289,14 +275,32 @@ export class AppService {
         }
       }
 
-      console.log('wbtcRatio:', wbtcRatio, 'test', Math.abs(wbtcRatio - 0.5));
+      // Ensure hedge size doesn't exceed maximum allowed
+      const maxHedgeSize = wbtcPositionValue * this.MAX_HEDGE_RATIO;
+      hedgeSize = Math.min(hedgeSize, maxHedgeSize);
 
       // Check if we need to adjust the hedge position
-      const needsHedgeAdjustment = !currentHedgePosition || 
+      let needsHedgeAdjustment = !currentHedgePosition || 
         !currentHedgePosition.position || 
         parseFloat(currentHedgePosition.position.szi) === 0 ||
         Math.abs(wbtcRatio - 0.5) > 0.05 || // >5% deviation from 50/50
         currentFundingRate > this.FUNDING_RATE_THRESHOLD; // High funding rate
+
+      // Additional check: compare current hedge size with calculated hedge size
+      if (currentHedgePosition && currentHedgePosition.position && parseFloat(currentHedgePosition.position.szi) !== 0) {
+        const currentHedgeSize = parseFloat(currentHedgePosition.position.positionValue);
+        const hedgeSizeDifference = Math.abs(currentHedgeSize - hedgeSize);
+        const hedgeSizeDifferencePercent = (hedgeSizeDifference / hedgeSize) * 100;
+        
+        // Only adjust if difference is more than 15%
+        const hedgeAdjustmentThreshold = 7;
+        if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
+          needsHedgeAdjustment = false;
+          this.logger.log(`Hedge adjustment skipped: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
+        } else {
+          this.logger.log(`Hedge adjustment needed: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference > ${hedgeAdjustmentThreshold}% threshold)`);
+        }
+      }
 
       if (needsHedgeAdjustment) {
         // Calculate target leverage based on conditions
@@ -331,6 +335,14 @@ export class AppService {
             Collateral: $${collateral.toFixed(2)}
             Margin Usage: ${(marginUsage * 100).toFixed(2)}%
           `);
+
+          try {
+            await this.hyperliquidService.closePosition('BTC', false);
+            this.logger.log('Successfully closed previous hedge position');
+          } catch (error) {
+            this.logger.error(`Failed to close hedge position: ${error.message}`);
+            return;
+          }
           
           try {
             await this.hyperliquidService.openPosition({
@@ -364,6 +376,14 @@ export class AppService {
           collateral: hedgeSize / this.currentHedgeLeverage,
         });
       }
+
+      try {
+        if(totalFeesValue > 0) {
+          await this.collectFees(totalFeesValue);
+        }
+      } catch (error) {
+        this.logger.error(`Error collecting fees: ${error.message}`);
+      }
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }
@@ -386,21 +406,181 @@ export class AppService {
     return (lpValue - holdValue) * 100;
   }
 
-  private async collectFees() {
-    try {
-      const recipientAddress = await this.uniswapLpService.getSignerAddress();
-      
-      await this.uniswapLpService.collectFees({
+  private async collectFees(totalFeesValue: number) {
+    const recipientAddress = await this.uniswapLpService.getSignerAddress();
+      const params = {
         tokenId: this.WBTC_USDC_POSITION_ID,
         recipient: recipientAddress,
-        amount0Max: ethers.MaxUint256, // Collect all WBTC fees
-        amount1Max: ethers.MaxUint256, // Collect all USDC fees
-      });
+        amount0Max: ethers.parseUnits('1000000', 6), // Collect all WBTC fees
+        amount1Max: ethers.parseUnits('1000000', 6), // Collect all USDC fees
+      }
+      const { estimatedCostInUsd: gasCost } = await this.uniswapLpService.estimateCollectFees(params);
+      if(gasCost < this.FEE_COLLECTION_GAS_THRESHOLD
+        && totalFeesValue > this.FEE_COLLECTION_THRESHOLD
+      ) {
+        this.logger.log(`Collecting fees, estimated gas cost: $${gasCost.toFixed(2)}...`);
+        await this.uniswapLpService.collectFees(params);
+        this.logger.log('Successfully collected fees');
+      } else {
+        this.logger.log(`Skipping fees collection, gas cost: $${gasCost.toFixed(2)} is too high, or total fees value: $${totalFeesValue.toFixed(2)} is too low`);
+      }
+  }
 
-      this.logger.log('Successfully collected fees');
-    } catch (error) {
-      this.logger.error(`Error collecting fees: ${error.message}`);
+  private async checkLpRebalancing(currentPrice: number, position: any) {
+    // Get current position range
+    const tickLower = Number(position.tickLower);
+    const tickUpper = Number(position.tickUpper);
+    
+    // Convert ticks to prices
+    // price_WBTC_per_USDC = 1.0001^i * 10^(decimals_WBTC - decimals_USDC)
+    const tokensDecimalsDelta = Math.abs(position.token0.decimals - position.token1.decimals);
+    const lowerPrice = 1.0001 ** tickLower * Math.pow(10, tokensDecimalsDelta);
+    const upperPrice = 1.0001 ** tickUpper * Math.pow(10, tokensDecimalsDelta);
+    this.logger.log(`LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`);
+
+    // Calculate price position within current range
+    const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
+    
+    // Check cooldown period
+    const timeSinceLastRebalance = Date.now() - this.lastLpRebalance;
+    if (timeSinceLastRebalance < this.LP_REBALANCE_COOLDOWN) {
+      this.logger.log('LP rebalancing still in cooldown period');
+      return; // Still in cooldown period
     }
+
+    let rebalancingNeeded = false;
+    let rebalancingAction = '';
+    let newRangePercent = 0.10; // Default 10% range
+
+    // Scenario 1: Price near upper or lower range boundary (98-100% of range)
+    if (
+      pricePosition <= this.LP_REBALANCE_BOUNDARY_THRESHOLD
+      || pricePosition >= (1 - this.LP_REBALANCE_BOUNDARY_THRESHOLD)
+    ) {
+      rebalancingNeeded = true;
+      rebalancingAction = 'boundary_rebalance';
+      newRangePercent = 0.10; // Current price ± 10%
+      this.logger.log(`LP rebalancing triggered: Price near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+    } else {
+      this.logger.log(`LP rebalancing not needed: Price not near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+    }
+    
+    // Scenario 2: Price out of range (>1 hour)
+    const isLiquidityZero = Number(position.liquidity) === 0;
+    const isOutOfRange = currentPrice < lowerPrice || currentPrice > upperPrice;
+
+    if (isOutOfRange) {
+      if (!this.outOfRangeStartTime) {
+        this.outOfRangeStartTime = Date.now();
+      } else if (Date.now() - this.outOfRangeStartTime > 60 * 60 * 1000) { // 1 hour
+        rebalancingNeeded = true;
+        rebalancingAction = 'out_of_range_rebalance';
+        newRangePercent = 0.10; // Current price ± 10%
+        this.logger.log(`LP rebalancing triggered: Price out of range for >1 hour`);
+      }
+    } else {
+      this.outOfRangeStartTime = null;
+    }
+
+    if(isLiquidityZero) {
+      rebalancingNeeded = true;
+    }
+
+    this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
+
+    if (rebalancingNeeded) {
+      await this.executeLpRebalancing(currentPrice, newRangePercent, rebalancingAction);
+    }
+  }
+
+  private async executeLpRebalancing(currentPrice: number, newRangePercent: number, action: string) {
+    this.logger.log(`Executing LP rebalancing: ${action}`);
+    
+    // Get current position
+    const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
+    
+    // Calculate new price range
+    const newLowerPrice = currentPrice * (1 - newRangePercent / 2);
+    const newUpperPrice = currentPrice * (1 + newRangePercent / 2);
+
+    console.log('newLowerPrice', newLowerPrice, 'newUpperPrice', newUpperPrice);
+    
+    // Convert prices to ticks
+    const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
+    const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
+
+    this.logger.log(`Rebalancing LP position:
+      Current range: ${(1.0001 ** Number(position.tickLower)).toFixed(2)} - ${(1.0001 ** Number(position.tickUpper)).toFixed(2)}
+      New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
+      Action: ${action}
+    `);
+
+    if(Number(position.liquidity) > 0) {
+      // Remove current liquidity
+      this.logger.log('LP: Removing current liquidity...');
+      const removeLiquidityTxHash = await this.uniswapLpService.removeLiquidity({
+        tokenId: this.WBTC_USDC_POSITION_ID,
+        liquidity: position.liquidity,
+        amount0Min: 0,
+        amount1Min: 0,
+        deadline: Math.floor(Date.now() / 1000) + 3600,
+      });
+      this.logger.log(`LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`);
+
+      this.logger.log('LP: Collecting fees...');
+      const collectFeesTxHash = await this.uniswapLpService.collectFees({
+        tokenId: this.WBTC_USDC_POSITION_ID,
+        recipient: await this.uniswapLpService.getSignerAddress(),
+        amount0Max: ethers.parseUnits('10000000', 6),
+        amount1Max: ethers.parseUnits('10000000', 6),
+      });
+      this.logger.log(`Fees collected: ${collectFeesTxHash}`);
+    }
+
+    // Calculate new liquidity amounts based on target position value
+    const targetWbtcValue = this.LP_TARGET_POSITION_VALUE / 2;
+    const targetUsdcValue = this.LP_TARGET_POSITION_VALUE / 2;
+    
+    const newWbtcAmount = targetWbtcValue / currentPrice;
+    const newUsdcAmount = targetUsdcValue;
+
+    const addLiquidityParams = {
+      token0: position.token0,
+      token1: position.token1,
+      fee: Number(position.fee),
+      tickLower: -887220, // newTickLower,
+      tickUpper: 887220, newTickUpper,
+      amount0Desired: ethers.parseUnits(newWbtcAmount.toFixed(position.token0.decimals), position.token0.decimals),
+      amount1Desired: ethers.parseUnits(newUsdcAmount.toFixed(position.token1.decimals), position.token1.decimals),
+      amount0Min: 0, // 1% slippage
+      amount1Min: 0, // 1% slippage
+      recipient: await this.uniswapLpService.getSignerAddress(),
+      deadline: Math.floor(Date.now() / 1000) + 3600,
+    }
+
+    this.logger.log(`Adding new liquidity:
+      New WBTC amount: ${newWbtcAmount.toFixed(position.token0.decimals)} (${addLiquidityParams.amount0Desired})
+      New USDC amount: ${newUsdcAmount.toFixed(position.token1.decimals)} (${addLiquidityParams.amount1Desired})
+      Ticks: ${addLiquidityParams.tickLower} - ${addLiquidityParams.tickUpper}
+      Recipient: ${addLiquidityParams.recipient}
+      Fee: ${addLiquidityParams.fee}
+    `);
+
+    // Add new liquidity with adjusted range
+    const tokenId = await this.uniswapLpService.addLiquidity(addLiquidityParams);
+    this.WBTC_USDC_POSITION_ID = tokenId;
+    this.logger.log(`LP: Successfully added new liquidity, token ID: ${tokenId}`);
+
+    // Update rebalancing state
+    this.lastLpRebalance = Date.now();
+    this.lpRebalanceCount++;
+
+    this.logger.log(`LP rebalancing completed successfully:
+      Action: ${action}
+      New WBTC amount: ${newWbtcAmount.toFixed(6)}
+      New USDC amount: ${newUsdcAmount.toFixed(2)}
+      Total rebalances: ${this.lpRebalanceCount}
+    `);
   }
 
   private async exitPosition() {
@@ -422,9 +602,6 @@ export class AppService {
 
       // Reset strategy state
       this.currentHedgeLeverage = 1;
-      this.weeklyFees = 0;
-      this.weeklyFundingCosts = 0;
-      this.consecutiveHighFundingDays = 0;
       this.outOfRangeStartTime = null;
 
       this.logger.log('Successfully exited position');

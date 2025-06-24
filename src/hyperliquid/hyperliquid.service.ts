@@ -166,13 +166,12 @@ export class HyperliquidService {
     const closePrice = isBuy
       ? Math.round(markPrice * 2).toString() + '.0'
       : Math.round(markPrice * 0.5).toString() + '.0';
-
-    console.log('Size to close:', size.toFixed(4));
-    console.log('Position size:', szi);
-    console.log('Is buy order:', isBuy);
-    console.log('Mark price:', markPrice);
-    console.log('Close price:', closePrice);
-
+    // console.log('Size to close:', size.toFixed(4));
+    // console.log('Position size:', szi);
+    // console.log('Is buy order:', isBuy);
+    // console.log('Mark price:', markPrice);
+    // console.log('Close price:', closePrice);
+    
     const order = {
       orders: [
         {
@@ -186,8 +185,8 @@ export class HyperliquidService {
       ],
       grouping: 'na' as const,
     };
-
-    console.log('Full order object:', JSON.stringify(order, null, 2));
+    
+    // console.log('Full order object:', JSON.stringify(order, null, 2));
 
     return await this.exchangeClient.order(order);
   }

@@ -122,11 +122,11 @@ function calculatePricesFromSqrtPrice(
     const rawPrice = sqrtPrice * sqrtPrice;
 
     const decimalAdjustment = Math.pow(10, token0Dec - token1Dec);
-    console.log(
-      'decimalAdjustment (10^(6-18)):',
-      decimalAdjustment,
-      '= 10^-12',
-    );
+    // console.log(
+    //   'decimalAdjustment (10^(6-18)):',
+    //   decimalAdjustment,
+    //   '= 10^-12',
+    // );
 
     const token1PerToken0 = rawPrice * decimalAdjustment;
     const token0PerToken1 = 1 / token1PerToken0;
