@@ -89,7 +89,7 @@ export class AppService {
       console.log('position:', this.WBTC_USDC_POSITION_ID, position);
 
       // TODO: get from subgraph / api
-      const positionStartDate = '2025-06-15';
+      const positionStartDate = '2025-06-25';
       const positionEndDate = moment().format('YYYY-MM-DD');
       const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
       if(poolPriceHistory.length === 0) {
@@ -223,8 +223,8 @@ export class AppService {
         const hedgeSizeDifference = Math.abs(currentHedgeSize - targetHedgeSize);
         const hedgeSizeDifferencePercent = (hedgeSizeDifference / targetHedgeSize) * 100;
         
-        // Only adjust if difference is more than 7%
-        const hedgeAdjustmentThreshold = 7;
+        // Only adjust if difference is more than 5%
+        const hedgeAdjustmentThreshold = 5;
         if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
           needsHedgeAdjustment = false;
           this.logger.log(`Hedge adjustment skipped: current size ${currentHedgeSize.toFixed(4)} BTC vs target ${targetHedgeSize.toFixed(4)} BTC (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
