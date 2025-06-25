@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
+import { AerodromeLpService } from './aerodrome/aerodrome.service';
 import { HyperliquidService } from './hyperliquid/hyperliquid.service';
 import { ConfigService } from '@nestjs/config';
 import { Config } from './config/configuration';
@@ -64,6 +65,7 @@ export class AppService {
 
   constructor(
     private readonly uniswapLpService: UniswapLpService,
+    private readonly aerodromeService: AerodromeLpService,
     private readonly hyperliquidService: HyperliquidService,
     private readonly fundingService: FundingService,
     private readonly configService: ConfigService<Config>,
@@ -75,6 +77,15 @@ export class AppService {
     this.logger.log('Starting BTC/USDC LP strategy...');
     
     try {
+      // Initialize LP service based on provider selection
+      const lpProvider = this.configService.get('lpProvider');
+      if (lpProvider === 'aerodrome') {
+        await this.aerodromeService.bootstrap();
+        this.logger.log('Using Aerodrome as LP provider');
+      } else {
+        this.logger.log('Using Uniswap as LP provider');
+      }
+      
       // Initial position check and setup
       await this.monitorPosition();
       
@@ -94,13 +105,14 @@ export class AppService {
   private async monitorPosition() {
     try {
       // Get current position state
-      const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
-      console.log('position:', this.WBTC_USDC_POSITION_ID, position);
+      const position = await this.getLpPosition();
+      const lpProvider = this.configService.get('lpProvider');
+      console.log(`${lpProvider} position:`, position);
 
       // TODO: get from subgraph / api
       const positionStartDate = this.configService.get('uniswap').positionCreationDate;
       const positionEndDate = moment().format('YYYY-MM-DD');
-      const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
+      const poolPriceHistory = await this.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
       if(poolPriceHistory.length === 0) {
         this.logger.error('No pool price history found');
         return;
@@ -445,6 +457,60 @@ export class AppService {
       } else {
         this.logger.log(`Skipping fees collection, gas cost: $${gasCost.toFixed(2)} is too high, or total fees value: $${totalFeesValue.toFixed(2)} is too low`);
       }
+  }
+
+  /**
+   * Get LP position data from either Uniswap or Aerodrome
+   */
+  private async getLpPosition() {
+    const lpProvider = this.configService.get('lpProvider');
+    
+    if (lpProvider === 'aerodrome') {
+      const signerAddress = await this.aerodromeService.getSignerAddress();
+      const poolAddress = this.configService.get('aerodrome').poolAddress;
+      const position = await this.aerodromeService.getPosition(signerAddress, poolAddress);
+      
+      if (!position) {
+        throw new Error(`No Aerodrome position found in pool ${poolAddress}`);
+      }
+      
+      // Convert Aerodrome position to common format
+      // Parse the formatted balance strings back to raw values for calculations
+      const token0Amount = parseFloat(position.token0Balance);
+      const token1Amount = parseFloat(position.token1Balance);
+      const token0BalanceRaw = ethers.parseUnits(token0Amount.toString(), 8).toString();
+      const token1BalanceRaw = ethers.parseUnits(token1Amount.toString(), 6).toString();
+      
+      return {
+        token0BalanceRaw: token0BalanceRaw,
+        token1BalanceRaw: token1BalanceRaw,
+        token0Balance: `${position.token0Balance} ${position.token0Symbol}`,
+        token1Balance: `${position.token1Balance} ${position.token1Symbol}`,
+        token0: { decimals: 8, symbol: position.token0Symbol },
+        token1: { decimals: 6, symbol: position.token1Symbol },
+        liquidity: position.liquidityAmount,
+        isStaked: position.isStaked,
+        pendingRewards: position.pendingAeroRewards
+      };
+    } else {
+      // Use existing Uniswap logic
+      return await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
+    }
+  }
+
+  /**
+   * Get pool price history from either provider
+   */
+  private async getPoolPriceHistory(startDate: string, endDate: string, interval: 'daily' | 'hourly') {
+    const lpProvider = this.configService.get('lpProvider');
+    
+    if (lpProvider === 'aerodrome') {
+      // For now, use Uniswap price data as reference since both are BTC/USDC
+      // TODO: Implement Aerodrome-specific price history if needed
+      return await this.uniswapLpService.getPoolPriceHistory(startDate, endDate, interval);
+    } else {
+      return await this.uniswapLpService.getPoolPriceHistory(startDate, endDate, interval);
+    }
   }
 
   private async checkLpRebalancing(currentPrice: number, position: any) {
