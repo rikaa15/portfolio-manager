@@ -20,8 +20,17 @@ export class AppService {
   // - 50% hedge ratio: Short 50% of BTC quantity in LP position
   // - Dynamic scaling: Increase hedge as price approaches upper range (BTC quantity decreases)
   // - Dynamic scaling: Decrease hedge as price approaches lower range (BTC quantity increases)
+  // 
+  // Hedge Adjustment Strategy:
+  // 1. Base hedge size = current BTC quantity in LP position
+  // 2. Adjust based on WBTC ratio deviation from 50/50 target:
+  //    - If WBTC ratio > 50% (too much BTC): Increase hedge to reduce exposure
+  //    - If WBTC ratio < 50% (too much USDC): Decrease hedge to increase exposure
+  // 3. Additional scaling based on price position within range:
+  //    - Near upper range: Increase hedge (BTC quantity decreasing)
+  //    - Near lower range: Decrease hedge (BTC quantity increasing)
+  // 4. Apply limits: 30% minimum, 75% maximum of BTC quantity
   private readonly PRICE_RANGE_PERCENT = 0.10; // 10% price range ✅ Documentation requirement
-  private readonly TARGET_HEDGE_RATIO = 0.5; // 50% hedge ratio ✅ Documentation requirement
   private readonly MAX_HEDGE_RATIO = 0.75; // 75% maximum hedge ratio
   private readonly MIN_HEDGE_RATIO = 0.3; // 30% minimum hedge ratio
   private readonly MAX_LEVERAGE = 2; // Maximum allowed leverage
@@ -31,7 +40,7 @@ export class AppService {
   private readonly FUNDING_RATE_THRESHOLD = 0.001; // 0.1% per 8h funding rate threshold ✅ Documentation requirement
   private readonly GAS_THRESHOLD = 20; // $20 gas threshold
   private readonly OUT_OF_RANGE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours in ms
-  private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ratio ✅ Documentation requirement
+  private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ✅ Documentation requirement
   private readonly MAX_POSITION_ADJUSTMENT = 0.1; // Maximum 10% position size adjustment per day
 
   // LP Rebalancing parameters
@@ -139,7 +148,7 @@ export class AppService {
       let hedgeBtcDelta = 0;
       const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
       if (currentHedgePosition && currentHedgePosition.position) {
-        hedgeBtcDelta = Number(currentHedgePosition.position.szi);
+        hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }
       
       // Calculate net BTC delta (LP + Hedge)
@@ -187,21 +196,53 @@ export class AppService {
       const fundingData = await this.fundingService.getCurrentFundingRate('BTC');
       const currentFundingRate = fundingData.fundingRate;
 
-      // ✅ CORRECTED: Calculate hedge size based on actual BTC quantity in LP position
-      // This implements the core strategy: hedge should be proportional to BTC quantity in LP
-      let targetHedgeSize = wbtcAmount * this.TARGET_HEDGE_RATIO; // 50% of BTC quantity in LP
+      // ✅ IMPLEMENTED: Dynamic hedge size adjustment based on current WBTC ratio in LP
+      // Strategy: Hedge should be proportional to BTC quantity in LP position
+      // Target: Maintain 50/50 allocation, adjust hedge based on deviation from target
       
-      // ✅ IMPLEMENTED: Dynamic hedge scaling based on price position in range
-      // Increase hedge as price approaches upper range (BTC quantity decreases)
-      // Decrease hedge as price approaches lower range (BTC quantity increases)
+      // Calculate target hedge size based on current BTC quantity in LP
+      let targetHedgeSize = wbtcAmount; // Start with full BTC quantity in LP
+      
+      // Adjust hedge size based on deviation from 50/50 target
+      // If WBTC ratio > 50% (too much BTC), increase hedge to reduce exposure
+      // If WBTC ratio < 50% (too much USDC), decrease hedge to increase exposure
+      const targetRatio = 0.5; // 50/50 target
+      const ratioDeviation = wbtcRatio - targetRatio; // Positive = too much BTC, Negative = too much USDC
+      
+      if (Math.abs(ratioDeviation) > 0.05) { // Only adjust if >5% deviation from 50/50
+        if (ratioDeviation > 0) {
+          // WBTC ratio > 50% (too much BTC exposure)
+          // Increase hedge to reduce BTC exposure
+          const adjustmentFactor = Math.min(ratioDeviation * 2, 0.5); // Cap at 50% increase
+          targetHedgeSize = wbtcAmount * (1 + adjustmentFactor);
+          this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% > 50% target, increasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
+        } else {
+          // WBTC ratio < 50% (too much USDC exposure)
+          // Decrease hedge to increase BTC exposure
+          const adjustmentFactor = Math.min(Math.abs(ratioDeviation) * 2, 0.5); // Cap at 50% decrease
+          targetHedgeSize = wbtcAmount * (1 - adjustmentFactor);
+          this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% < 50% target, decreasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
+        }
+      } else {
+        this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% within 5% of 50% target, no hedge adjustment needed`);
+      }
+      
+      // Apply hedge size limits to prevent over-hedging
+      const maxHedgeSize = wbtcAmount * this.MAX_HEDGE_RATIO; // 75% of BTC quantity
+      const minHedgeSize = wbtcAmount * this.MIN_HEDGE_RATIO; // 30% of BTC quantity
+      targetHedgeSize = Math.max(minHedgeSize, Math.min(maxHedgeSize, targetHedgeSize));
+      
+      // Additional dynamic scaling based on price position in range (as per documentation)
       if (inRange) {
         const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
         if (pricePosition > 0.7) {
           // Price near upper range - BTC quantity in LP is decreasing, increase hedge
-          targetHedgeSize = Math.min(wbtcAmount * this.MAX_HEDGE_RATIO, targetHedgeSize * 1.2);
+          targetHedgeSize = Math.min(maxHedgeSize, targetHedgeSize * 1.2);
+          this.logger.log(`Price near upper range (${(pricePosition * 100).toFixed(1)}%), increasing hedge by 20%`);
         } else if (pricePosition < 0.3) {
           // Price near lower range - BTC quantity in LP is increasing, decrease hedge
-          targetHedgeSize = Math.max(wbtcAmount * this.MIN_HEDGE_RATIO, targetHedgeSize * 0.8);
+          targetHedgeSize = Math.max(minHedgeSize, targetHedgeSize * 0.8);
+          this.logger.log(`Price near lower range (${(pricePosition * 100).toFixed(1)}%), decreasing hedge by 20%`);
         }
       }
 
@@ -223,7 +264,7 @@ export class AppService {
         const hedgeSizeDifferencePercent = (hedgeSizeDifference / targetHedgeSize) * 100;
         
         // Only adjust if difference is more than 5%
-        const hedgeAdjustmentThreshold = 5;
+        const hedgeAdjustmentThreshold = 1;
         if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
           needsHedgeAdjustment = false;
           this.logger.log(`Hedge adjustment skipped: current size ${currentHedgeSize.toFixed(4)} BTC vs target ${targetHedgeSize.toFixed(4)} BTC (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
@@ -270,6 +311,17 @@ export class AppService {
       } else {
         this.logger.log('No active hedge position found');
       }
+
+      // Log hedge adjustment reasoning
+      this.logger.log(`Hedge Adjustment Analysis:
+        Current WBTC Ratio: ${(wbtcRatio * 100).toFixed(1)}%
+        Target Ratio: 50%
+        Deviation: ${(ratioDeviation * 100).toFixed(1)}%
+        Current Hedge Size: ${Math.abs(hedgeBtcDelta).toFixed(4)} BTC
+        Target Hedge Size: ${targetHedgeSize.toFixed(4)} BTC
+        Net BTC Delta: ${netBtcDelta.toFixed(4)} BTC ($${netBtcDeltaValue.toFixed(2)})
+        Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
+      `);
 
       if (needsHedgeAdjustment) {
         // Calculate target leverage based on conditions
