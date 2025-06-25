@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { Wallet } from 'ethers';
+import * as ethers from 'ethers';
 
 export interface LyraTradeHistoryRequest {
   currency?: string;
@@ -53,6 +54,7 @@ export interface LyraSubaccount {
   label: string;
   is_frozen: boolean;
   collaterals: any[];
+  subaccount_value?: string;
 }
 
 export interface LyraAccount {
@@ -84,6 +86,38 @@ export interface AuthHeaders {
   'X-LyraSignature': string;
 }
 
+// New interfaces for order submission
+export interface DeriveOrder {
+  subaccount_id: number;
+  instrument_name: string;
+  direction: 'buy' | 'sell';
+  amount: string;
+  limit_price?: string;
+  max_fee: string;
+  nonce: string;
+  signature_expiry_sec: number;
+  signer: string;
+  signature?: string;
+}
+
+export interface OrderResponse {
+  success: boolean;
+  result?: {
+    order_id: string;
+    subaccount_id: number;
+    instrument_name: string;
+    direction: string;
+    amount: string;
+    price?: string;
+    order_status: string;
+    timestamp: number;
+  };
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
 @Injectable()
 export class DeriveService {
   private readonly logger = new Logger(DeriveService.name);
@@ -93,6 +127,11 @@ export class DeriveService {
   private readonly retryAttempts = 2;
   private wallet: Wallet | null = null;
   private deriveWalletAddress: string | null = null;
+
+  // EIP-712 Constants for order signing (based on Derive documentation)
+  private readonly DOMAIN_SEPARATOR = '0x9bcf4dc06df5d8bf23af818d5716491b995020f377d3b7b64c29ed14e3dd1105'; // Testnet - from Protocol Constants table
+  private readonly ACTION_TYPEHASH = '0x4d7a9f27c403ff9c0f19bce61d76d82f9aa29f8d6d4b0c5474607d9770d1af17'; // Same for mainnet/testnet - from Protocol Constants table
+  private readonly TRADE_MODULE_ADDRESS = '0x87F2863866D85E3192a35A73b388BD625D83f2be'; // Testnet - from Protocol Constants table
 
   constructor(private configService: ConfigService) {
     this.baseUrl = this.configService.get<string>('derive.apiUrl') || 'https://api.lyra.finance';
@@ -559,5 +598,338 @@ export class DeriveService {
       tx_status: trade.tx_status,
       tx_hash: trade.tx_hash,
     }));
+  }
+
+  /**
+   * Get current BTC option instruments suitable for small test trades
+   */
+  async getActiveOptionsForTrading(minDaysToExpiry: number = 7): Promise<LyraInstrument[]> {
+    const instruments = await this.getOptionInstruments(false); // Get active only
+    const now = Date.now() / 1000;
+    const minExpiryTime = now + (minDaysToExpiry * 24 * 60 * 60);
+
+    return instruments.filter(instrument => 
+      instrument.instrument_name.startsWith('BTC-') &&
+      instrument.expiry_timestamp &&
+      instrument.expiry_timestamp > minExpiryTime &&
+      instrument.is_active
+    ).sort((a, b) => (a.expiry_timestamp || 0) - (b.expiry_timestamp || 0)); // Sort by expiry (nearest first)
+  }
+
+  /**
+   * Create order signature using EIP-712 structured data
+   */
+  private async signOrder(order: DeriveOrder): Promise<string> {
+    if (!this.wallet) {
+      throw new Error('Wallet not initialized for signing');
+    }
+
+    // Get instrument details for base_asset_address
+    const instrumentResult = await this.makeRequestWithRetry(
+      () => this.axiosInstance.post('/public/get_instrument', {
+        instrument_name: order.instrument_name,
+      }),
+      'fetch instrument details for signing'
+    );
+
+    if (!instrumentResult?.data?.result) {
+      throw new Error(`Failed to get instrument details for ${order.instrument_name}`);
+    }
+
+    const instrument = instrumentResult.data.result;
+    const baseAssetAddress = instrument.base_asset_address;
+    const subId = instrument.base_asset_sub_id || 0;
+
+    // Encode trade module data
+    const encoder = new ethers.AbiCoder();
+    const tradeModuleData = encoder.encode(
+      ['address', 'uint256', 'int256', 'uint256', 'uint256', 'bool'],
+      [
+        baseAssetAddress,
+        subId,
+        ethers.parseUnits(order.amount, 18),
+        ethers.parseUnits(order.max_fee, 18),
+        order.subaccount_id,
+        order.direction === 'buy'
+      ]
+    );
+
+    const tradeModuleDataHash = ethers.keccak256(Buffer.from(tradeModuleData.slice(2), 'hex'));
+
+    // Create action hash
+    const actionHash = ethers.keccak256(
+      encoder.encode(
+        ['bytes32', 'uint256', 'uint256', 'address', 'bytes32', 'uint256', 'address', 'address'],
+        [
+          this.ACTION_TYPEHASH,
+          order.subaccount_id,
+          order.nonce,
+          this.TRADE_MODULE_ADDRESS,
+          tradeModuleDataHash,
+          order.signature_expiry_sec,
+          this.wallet.address,
+          order.signer
+        ]
+      )
+    );
+
+    // Create EIP-712 typed data hash
+    const typedDataHash = ethers.keccak256(
+      Buffer.concat([
+        Buffer.from('1901', 'hex'),
+        Buffer.from(this.DOMAIN_SEPARATOR.slice(2), 'hex'),
+        Buffer.from(actionHash.slice(2), 'hex')
+      ])
+    );
+
+    // Sign the hash
+    const signature = this.wallet.signingKey.sign(typedDataHash);
+    return signature.serialized;
+  }
+
+  /**
+   * Submit a signed order to Derive with automatic fee adjustment
+   */
+  async submitOrderWithRetry(order: DeriveOrder, maxRetries: number = 1): Promise<OrderResponse> {
+    if (!this.isAuthenticationAvailable()) {
+      throw new Error('Authentication not available. Please set DERIVE_PRIVATE_KEY and DERIVE_WALLET_ADDRESS environment variables.');
+    }
+
+    let currentOrder = { ...order };
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Sign the order
+      const signedOrder = {
+        ...currentOrder,
+        signature: await this.signOrder(currentOrder)
+      };
+
+      this.logger.log(`Submitting order (attempt ${attempt + 1}): ${currentOrder.direction} ${currentOrder.amount} ${currentOrder.instrument_name} (max_fee: ${currentOrder.max_fee})`);
+
+      const result = await this.makeAuthenticatedRequest<OrderResponse>(
+        '/private/order',
+        signedOrder,
+        'POST'
+      );
+
+      if (result?.success) {
+        this.logger.log(`Order submitted successfully: ${result.result?.order_id}`);
+        return result;
+      } else if (result?.error?.message?.includes('Max fee order param is too low') && attempt < maxRetries) {
+        // Parse the required minimum fee from the error message
+        const errorData = (result.error as any)?.data || '';
+        const feeMatch = errorData.match(/must be >= ([\d.]+)/);
+        
+        if (feeMatch) {
+          const requiredFee = parseFloat(feeMatch[1]);
+          const newMaxFee = (requiredFee * 1.01).toFixed(4); // Add 1% buffer
+          
+          this.logger.log(`Max fee too low (${currentOrder.max_fee}), retrying with ${newMaxFee}`);
+          currentOrder.max_fee = newMaxFee;
+          
+          // Generate new nonce for retry
+          currentOrder.nonce = Date.now().toString() + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+          continue;
+        }
+      }
+      
+      // If we get here, either it succeeded, failed for other reasons, or we couldn't parse the fee
+      if (result?.error) {
+        this.logger.error(`Order submission failed: ${result.error.message}`);
+      }
+      
+      return result || { success: false, error: { code: -1, message: 'Unknown error' } };
+    }
+
+    return { success: false, error: { code: -1, message: 'Max retries exceeded' } };
+  }
+
+  /**
+   * Open a BTC options position with specified parameters
+   */
+  async openPosition(params: {
+    subaccountId: number;
+    instrumentName: string;
+    direction: 'buy' | 'sell';
+    amount: string;
+    limitPrice?: string;
+    maxFee: string;
+    useRetry?: boolean;
+  }): Promise<{
+    success: boolean;
+    order?: OrderResponse;
+    error?: string;
+  }> {
+    try {
+      this.logger.log(`Opening position: ${params.direction} ${params.amount} ${params.instrumentName} (max_fee: $${params.maxFee})`);
+
+      // Get current pricing if no limit price provided
+      let finalLimitPrice = params.limitPrice;
+      if (!finalLimitPrice) {
+        const tickerResult = await this.makeRequestWithRetry(
+          () => this.axiosInstance.post('/public/get_ticker', {
+            instrument_name: params.instrumentName,
+          }),
+          'fetch ticker for pricing'
+        );
+
+        if (!tickerResult?.data?.result) {
+          return {
+            success: false,
+            error: 'Failed to get current pricing for instrument'
+          };
+        }
+
+        const ticker = tickerResult.data.result;
+        const currentPrice = parseFloat(ticker.mark_price || ticker.best_bid_price || ticker.best_ask_price || '0');
+        
+        if (currentPrice <= 0) {
+          return {
+            success: false,
+            error: 'Invalid pricing data received'
+          };
+        }
+
+        // Set limit price with 5% buffer (above market for buy, below for sell)
+        const priceAdjustment = params.direction === 'buy' ? 1.05 : 0.95;
+        finalLimitPrice = Math.round(currentPrice * priceAdjustment).toString();
+        
+        this.logger.log(`Auto-calculated limit price: $${finalLimitPrice} (market: $${currentPrice})`);
+      }
+
+      // Generate nonce
+      const nonce = Date.now().toString() + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+      
+      // Create order
+      const order: DeriveOrder = {
+        subaccount_id: params.subaccountId,
+        instrument_name: params.instrumentName,
+        direction: params.direction,
+        amount: params.amount,
+        limit_price: finalLimitPrice,
+        max_fee: params.maxFee,
+        nonce,
+        signature_expiry_sec: Math.floor(Date.now() / 1000) + 3600, // 1 hour expiry
+        signer: this.deriveWalletAddress!,
+      };
+
+      this.logger.log(`Order details: ${JSON.stringify(order, null, 2)}`);
+
+      // Submit order (with or without retry)
+      const orderResult = params.useRetry !== false 
+        ? await this.submitOrderWithRetry(order, 1)
+        : await this.submitOrderWithRetry(order, 0); // No retries
+
+      return {
+        success: orderResult.success || false,
+        order: orderResult,
+        error: orderResult.success ? undefined : orderResult.error?.message
+      };
+
+    } catch (error) {
+      this.logger.error('Failed to open position:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Close a BTC options position by selling/buying back
+   */
+  async closePosition(params: {
+    subaccountId: number;
+    instrumentName: string;
+    amount: string; // Amount to close (should match or be less than current position)
+    limitPrice?: string;
+    maxFee: string;
+    useRetry?: boolean;
+  }): Promise<{
+    success: boolean;
+    order?: OrderResponse;
+    error?: string;
+  }> {
+    try {
+      this.logger.log(`Closing position: ${params.amount} ${params.instrumentName} (max_fee: $${params.maxFee})`);
+
+      // First, check current position to determine close direction
+      const positions = await this.getPositions(params.subaccountId);
+      const currentPosition = positions.find(pos => pos.instrument_name === params.instrumentName);
+      
+      if (!currentPosition) {
+        return {
+          success: false,
+          error: `No position found for ${params.instrumentName} in subaccount ${params.subaccountId}`
+        };
+      }
+
+      // Determine close direction (opposite of current position)
+      const currentAmount = parseFloat(currentPosition.amount || '0');
+      const closeDirection: 'buy' | 'sell' = currentAmount > 0 ? 'sell' : 'buy';
+      
+      this.logger.log(`Current position: ${currentAmount} ${params.instrumentName}, closing with ${closeDirection}`);
+
+      // Validate close amount
+      const closeAmount = parseFloat(params.amount);
+      const maxCloseAmount = Math.abs(currentAmount);
+      
+      if (closeAmount > maxCloseAmount) {
+        return {
+          success: false,
+          error: `Cannot close ${closeAmount} - maximum closeable amount is ${maxCloseAmount}`
+        };
+      }
+
+      // Use the openPosition method with opposite direction
+      return await this.openPosition({
+        subaccountId: params.subaccountId,
+        instrumentName: params.instrumentName,
+        direction: closeDirection,
+        amount: params.amount,
+        limitPrice: params.limitPrice,
+        maxFee: params.maxFee,
+        useRetry: params.useRetry
+      });
+
+    } catch (error) {
+      this.logger.error('Failed to close position:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get current position for a specific instrument
+   */
+  async getPositionForInstrument(subaccountId: number, instrumentName: string): Promise<{
+    exists: boolean;
+    amount?: string;
+    averagePrice?: string;
+    unrealizedPnl?: string;
+    position?: any;
+  }> {
+    try {
+      const positions = await this.getPositions(subaccountId);
+      const position = positions.find(pos => pos.instrument_name === instrumentName);
+      
+      if (!position) {
+        return { exists: false };
+      }
+
+      return {
+        exists: true,
+        amount: position.amount,
+        averagePrice: position.average_price,
+        unrealizedPnl: position.unrealized_pnl,
+        position
+      };
+
+    } catch (error) {
+      this.logger.error(`Failed to get position for ${instrumentName}:`, error.message);
+      return { exists: false };
+    }
   }
 }
