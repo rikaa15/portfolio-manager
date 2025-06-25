@@ -40,7 +40,7 @@ export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
   uniswap: {
-    positionId: process.env.UNISWAP_POSITION_ID || '1009421',
+    positionId: process.env.UNISWAP_POSITION_ID || '1016832',
   },
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',

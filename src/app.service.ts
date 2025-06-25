@@ -11,7 +11,7 @@ import * as moment from 'moment';
 export class AppService {
   private readonly logger = new Logger(AppService.name);
   private WBTC_USDC_POSITION_ID: string;
-  private readonly MONITORING_INTERVAL = 60 * 60 * 1000; // 60 minutes
+  private readonly MONITORING_INTERVAL = 10 * 60 * 1000; // 60 minutes
   private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
   private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
   

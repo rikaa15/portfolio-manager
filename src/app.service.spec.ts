@@ -12,7 +12,7 @@ import { FundingService } from './funding/funding.service';
 import { AppConfigModule } from './config/config.module';
 
 const POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
-const INITIAL_INVESTMENT = 10000; // $10,000 USD
+const INITIAL_INVESTMENT = 100000; // $10,000 USD
 
 const logger = {
   log: (message: string) => {
