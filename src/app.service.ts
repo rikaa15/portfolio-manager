@@ -11,23 +11,27 @@ import * as moment from 'moment';
 export class AppService {
   private readonly logger = new Logger(AppService.name);
   private WBTC_USDC_POSITION_ID: string;
-  private readonly MONITORING_INTERVAL = 10 * 60 * 1000; // 60 minutes
+  private readonly MONITORING_INTERVAL = 10 * 60 * 1000; // 10 minutes (was 60 minutes)
   private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
   private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
   
-  // Strategy parameters from backtesting
-  private readonly PRICE_RANGE_PERCENT = 0.10; // 10% price range
-  private readonly TARGET_HEDGE_RATIO = 0.5; // 50% hedge ratio
+  // Strategy parameters from backtesting - Aligned with BTC/USDC LP Strategy Documentation
+  // Core Strategy: Hedge BTC quantity in LP position, not position value
+  // - 50% hedge ratio: Short 50% of BTC quantity in LP position
+  // - Dynamic scaling: Increase hedge as price approaches upper range (BTC quantity decreases)
+  // - Dynamic scaling: Decrease hedge as price approaches lower range (BTC quantity increases)
+  private readonly PRICE_RANGE_PERCENT = 0.10; // 10% price range ✅ Documentation requirement
+  private readonly TARGET_HEDGE_RATIO = 0.5; // 50% hedge ratio ✅ Documentation requirement
   private readonly MAX_HEDGE_RATIO = 0.75; // 75% maximum hedge ratio
   private readonly MIN_HEDGE_RATIO = 0.3; // 30% minimum hedge ratio
   private readonly MAX_LEVERAGE = 2; // Maximum allowed leverage
   private readonly MIN_LEVERAGE = 0.5; // Minimum allowed leverage
   private readonly MAX_MARGIN_USAGE = 0.75; // 75% max margin usage
   private readonly LIQUIDATION_BUFFER = 0.85; // 85% liquidation buffer
-  private readonly FUNDING_RATE_THRESHOLD = 0.001; // 0.1% per 8h funding rate threshold
+  private readonly FUNDING_RATE_THRESHOLD = 0.001; // 0.1% per 8h funding rate threshold ✅ Documentation requirement
   private readonly GAS_THRESHOLD = 20; // $20 gas threshold
   private readonly OUT_OF_RANGE_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours in ms
-  private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ratio
+  private readonly REBALANCE_THRESHOLD = 0.05; // 5% deviation from target ratio ✅ Documentation requirement
   private readonly MAX_POSITION_ADJUSTMENT = 0.1; // Maximum 10% position size adjustment per day
 
   // LP Rebalancing parameters
@@ -139,6 +143,10 @@ export class AppService {
         hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }
       
+      // Calculate net BTC delta (LP + Hedge)
+      const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
+      const netBtcDeltaPercent = (netBtcDelta / positionValue) * 100;
+      
       // Calculate LP APR
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
       const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
@@ -180,52 +188,55 @@ export class AppService {
       const fundingData = await this.fundingService.getCurrentFundingRate('BTC');
       const currentFundingRate = fundingData.fundingRate;
 
-      // Calculate target hedge size based on position value and price position in range
-      const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
-      let targetHedgeRatio = this.TARGET_HEDGE_RATIO;
-
-      // Dynamic hedge scaling based on price position in range
+      // ✅ CORRECTED: Calculate hedge size based on actual BTC quantity in LP position
+      // This implements the core strategy: hedge should be proportional to BTC quantity in LP
+      let targetHedgeSize = wbtcAmount * this.TARGET_HEDGE_RATIO; // 50% of BTC quantity in LP
+      
+      // ✅ IMPLEMENTED: Dynamic hedge scaling based on price position in range
+      // Increase hedge as price approaches upper range (BTC quantity decreases)
+      // Decrease hedge as price approaches lower range (BTC quantity increases)
       if (inRange) {
+        const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
         if (pricePosition > 0.7) {
-          targetHedgeRatio = Math.min(this.MAX_HEDGE_RATIO, this.TARGET_HEDGE_RATIO * 1.2);
+          // Price near upper range - BTC quantity in LP is decreasing, increase hedge
+          targetHedgeSize = Math.min(wbtcAmount * this.MAX_HEDGE_RATIO, targetHedgeSize * 1.2);
         } else if (pricePosition < 0.3) {
-          targetHedgeRatio = Math.max(this.MIN_HEDGE_RATIO, this.TARGET_HEDGE_RATIO * 0.8);
+          // Price near lower range - BTC quantity in LP is increasing, decrease hedge
+          targetHedgeSize = Math.max(wbtcAmount * this.MIN_HEDGE_RATIO, targetHedgeSize * 0.8);
         }
       }
 
-      const targetHedgeSize = positionValue * targetHedgeRatio;
+      // Convert hedge size from BTC quantity to USD value for position opening
+      const targetHedgeValue = targetHedgeSize * currentPrice;
 
-      // Adjust hedge based on conditions
-      if (Math.abs(impermanentLoss) > 1 || ratioDeviation > this.REBALANCE_THRESHOLD) {
-        const timeSinceLastRebalance = Date.now() - this.lastHedgeRebalance;
-        if (timeSinceLastRebalance >= 4 * 60 * 60 * 1000) { // 4 hours minimum between rebalances
-          const adjustmentFactor = Math.min(
-            Math.abs(impermanentLoss) / 100,
-            this.MAX_POSITION_ADJUSTMENT
-          );
+      // ✅ IMPLEMENTED: Check if hedge adjustment is needed based on core strategy
+      let needsHedgeAdjustment = !currentHedgePosition || 
+        !currentHedgePosition.position || 
+        parseFloat(currentHedgePosition.position.szi) === 0 ||
+        Math.abs(wbtcRatio - 0.5) > this.REBALANCE_THRESHOLD || // >5% deviation from 50/50
+        currentFundingRate > this.FUNDING_RATE_THRESHOLD || // High funding rate
+        Math.abs(hedgeBtcDelta + targetHedgeSize) > 0.01; // Hedge size deviation > 0.01 BTC
 
-          // Calculate new hedge size and leverage
-          let newHedgeSize = targetHedgeSize;
-          if (impermanentLoss < 0) {
-            newHedgeSize *= (1 + adjustmentFactor);
-            this.currentHedgeLeverage = Math.min(this.currentHedgeLeverage * 1.1, this.MAX_LEVERAGE);
-          } else {
-            newHedgeSize *= (1 - adjustmentFactor);
-            this.currentHedgeLeverage = Math.max(this.currentHedgeLeverage * 0.9, this.MIN_LEVERAGE);
-          }
-
-          // Apply hedge size limits
-          const maxHedgeSize = positionValue * this.MAX_HEDGE_RATIO;
-          const finalHedgeSize = Math.min(newHedgeSize, maxHedgeSize);
-
-          this.lastHedgeRebalance = Date.now();
+      // Additional check: compare current hedge size with calculated hedge size
+      if (currentHedgePosition && currentHedgePosition.position && parseFloat(currentHedgePosition.position.szi) !== 0) {
+        const currentHedgeSize = Math.abs(parseFloat(currentHedgePosition.position.szi)); // Convert to positive for comparison
+        const hedgeSizeDifference = Math.abs(currentHedgeSize - targetHedgeSize);
+        const hedgeSizeDifferencePercent = (hedgeSizeDifference / targetHedgeSize) * 100;
+        
+        // Only adjust if difference is more than 7%
+        const hedgeAdjustmentThreshold = 7;
+        if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
+          needsHedgeAdjustment = false;
+          this.logger.log(`Hedge adjustment skipped: current size ${currentHedgeSize.toFixed(4)} BTC vs target ${targetHedgeSize.toFixed(4)} BTC (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
+        } else {
+          this.logger.log(`Hedge adjustment needed: current size ${currentHedgeSize.toFixed(4)} BTC vs target ${targetHedgeSize.toFixed(4)} BTC (${hedgeSizeDifferencePercent.toFixed(1)}% difference > ${hedgeAdjustmentThreshold}% threshold)`);
         }
       }
 
       // Monitor funding rates and adjust position
       if (currentFundingRate > this.FUNDING_RATE_THRESHOLD) {
         // Calculate funding costs (8-hour rate * 3 for daily rate * hedge size * leverage)
-        const dailyFundingCost = currentFundingRate * 3 * targetHedgeSize * this.currentHedgeLeverage;
+        const dailyFundingCost = currentFundingRate * 3 * targetHedgeValue * this.currentHedgeLeverage;
         this.logger.log(`Current funding cost: $${dailyFundingCost.toFixed(2)} per day`);
       }
 
@@ -238,12 +249,13 @@ export class AppService {
         Initial WBTC Price: $${initialPrice}
         Current WBTC Price: $${currentPrice}
         Impermanent Loss: ${impermanentLoss}%
-        Target Hedge Size: $${targetHedgeSize.toFixed(2)}
+        Target Hedge Size: ${targetHedgeSize.toFixed(4)} BTC ($${targetHedgeValue.toFixed(2)})
         Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
         Current Funding Rate: ${(currentFundingRate * 100).toFixed(4)}%
         BTC Delta Metrics:
         - LP BTC size: ${lpBtcDelta.toFixed(4)} BTC
         - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
+        - Net BTC delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position)
         Performance Metrics:
         - LP APR: ${lpApr.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
@@ -258,48 +270,6 @@ export class AppService {
           leverage=${currentHedgePosition.position.leverage.value}x`);
       } else {
         this.logger.log('No active hedge position found');
-      }
-      
-      // Start with base hedge size based on WBTC value in LP pool
-      let hedgeSize = wbtcPositionValue * this.TARGET_HEDGE_RATIO;
-      
-      // Adjust hedge size based on price position in range
-      if (inRange) {
-        const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
-        if (pricePosition > 0.7) {
-          // Increase hedge as price approaches upper range
-          hedgeSize *= 1.2;
-        } else if (pricePosition < 0.3) {
-          // Decrease hedge as price approaches lower range
-          hedgeSize *= 0.8;
-        }
-      }
-
-      // Ensure hedge size doesn't exceed maximum allowed
-      const maxHedgeSize = wbtcPositionValue * this.MAX_HEDGE_RATIO;
-      hedgeSize = Math.min(hedgeSize, maxHedgeSize);
-
-      // Check if we need to adjust the hedge position
-      let needsHedgeAdjustment = !currentHedgePosition || 
-        !currentHedgePosition.position || 
-        parseFloat(currentHedgePosition.position.szi) === 0 ||
-        Math.abs(wbtcRatio - 0.5) > 0.05 || // >5% deviation from 50/50
-        currentFundingRate > this.FUNDING_RATE_THRESHOLD; // High funding rate
-
-      // Additional check: compare current hedge size with calculated hedge size
-      if (currentHedgePosition && currentHedgePosition.position && parseFloat(currentHedgePosition.position.szi) !== 0) {
-        const currentHedgeSize = parseFloat(currentHedgePosition.position.positionValue);
-        const hedgeSizeDifference = Math.abs(currentHedgeSize - hedgeSize);
-        const hedgeSizeDifferencePercent = (hedgeSizeDifference / hedgeSize) * 100;
-        
-        // Only adjust if difference is more than 15%
-        const hedgeAdjustmentThreshold = 7;
-        if (hedgeSizeDifferencePercent <= hedgeAdjustmentThreshold) {
-          needsHedgeAdjustment = false;
-          this.logger.log(`Hedge adjustment skipped: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference <= ${hedgeAdjustmentThreshold}% threshold)`);
-        } else {
-          this.logger.log(`Hedge adjustment needed: current size $${currentHedgeSize.toFixed(2)} vs target $${hedgeSize.toFixed(2)} (${hedgeSizeDifferencePercent.toFixed(1)}% difference > ${hedgeAdjustmentThreshold}% threshold)`);
-        }
       }
 
       if (needsHedgeAdjustment) {
@@ -323,14 +293,14 @@ export class AppService {
         }
         
         // Calculate final position parameters
-        const collateral = hedgeSize / targetLeverage;
+        const collateral = targetHedgeValue / targetLeverage;
         
         // Check margin usage
         const marginUsage = targetLeverage * (collateral / positionValue);
         if (marginUsage <= this.MAX_MARGIN_USAGE) {
           this.logger.log(`Adjusting hedge position:
             Current BTC Exposure: ${(wbtcRatio * 100).toFixed(2)}%
-            Target Hedge Size: $${hedgeSize.toFixed(2)}
+            Target Hedge Size: ${targetHedgeSize.toFixed(4)} BTC ($${targetHedgeValue.toFixed(2)})
             Target Leverage: ${targetLeverage.toFixed(2)}x
             Collateral: $${collateral.toFixed(2)}
             Margin Usage: ${(marginUsage * 100).toFixed(2)}%
@@ -365,7 +335,7 @@ export class AppService {
       }
 
       // Check liquidation risk
-      const hedgeMarginUsage = this.currentHedgeLeverage * hedgeSize / positionValue;
+      const hedgeMarginUsage = this.currentHedgeLeverage * targetHedgeValue / positionValue;
       if (hedgeMarginUsage > this.LIQUIDATION_BUFFER) {
         this.logger.warn('Position approaching liquidation buffer, reducing leverage');
         this.currentHedgeLeverage = Math.max(this.MIN_LEVERAGE, this.currentHedgeLeverage * 0.7);
@@ -373,7 +343,7 @@ export class AppService {
           coin: 'BTC',
           isLong: false,
           leverage: this.currentHedgeLeverage,
-          collateral: hedgeSize / this.currentHedgeLeverage,
+          collateral: targetHedgeValue / this.currentHedgeLeverage,
         });
       }
 
