@@ -89,7 +89,7 @@ export class AppService {
       console.log('position:', this.WBTC_USDC_POSITION_ID, position);
 
       // TODO: get from subgraph / api
-      const positionStartDate = '2025-06-25';
+      const positionStartDate = this.configService.get('uniswap').positionCreationDate;
       const positionEndDate = moment().format('YYYY-MM-DD');
       const poolPriceHistory = await this.uniswapLpService.getPoolPriceHistory(positionStartDate, positionEndDate, 'daily');
       if(poolPriceHistory.length === 0) {

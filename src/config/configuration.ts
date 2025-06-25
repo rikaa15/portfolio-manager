@@ -15,6 +15,7 @@ export interface Config {
   walletAddress: string;
   uniswap: {
     positionId: string;
+    positionCreationDate: string;
   };
   ethereum: {
     rpcUrl: string;
@@ -41,6 +42,7 @@ export default (): Config => ({
   walletAddress: process.env.WALLET_ADDRESS || '',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1016832',
+    positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-06-25',
   },
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',
