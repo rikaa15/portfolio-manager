@@ -10,6 +10,12 @@ import { BinanceService } from './binance/binance.service';
 @Module({
   imports: [AppConfigModule],
   controllers: [AppController],
-  providers: [AppService, HyperliquidService, UniswapLpService, FundingService, BinanceService],
+  providers: [
+    AppService,
+    HyperliquidService,
+    UniswapLpService,
+    FundingService,
+    BinanceService,
+  ],
 })
 export class AppModule {}

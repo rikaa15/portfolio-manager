@@ -210,9 +210,9 @@ describe('Aerodrome LP Backtesting', () => {
     await runAerodromeBacktest(
       POOL_ADDRESS,
       '2025-06-01',
-      '2025-06-12',
+      '2025-06-20',
       INITIAL_INVESTMENT,
-      'full',
+      'full-range',
     );
     expect(true).toBe(true);
   }, 60000);
