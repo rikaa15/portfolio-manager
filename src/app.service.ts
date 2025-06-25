@@ -131,7 +131,6 @@ export class AppService {
 
       // Calculate token ratios for rebalancing
       const wbtcRatio = wbtcPositionValue / positionValue;
-      const ratioDeviation = Math.abs(wbtcRatio - 0.5);
       
       // Calculate BTC delta from LP position
       const lpBtcDelta = wbtcAmount;
@@ -140,12 +139,12 @@ export class AppService {
       let hedgeBtcDelta = 0;
       const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
       if (currentHedgePosition && currentHedgePosition.position) {
-        hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
+        hedgeBtcDelta = Number(currentHedgePosition.position.szi);
       }
       
       // Calculate net BTC delta (LP + Hedge)
       const netBtcDelta = lpBtcDelta + hedgeBtcDelta;
-      const netBtcDeltaPercent = (netBtcDelta / positionValue) * 100;
+      const netBtcDeltaValue = netBtcDelta * currentPrice;
       
       // Calculate LP APR
       const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
@@ -255,7 +254,7 @@ export class AppService {
         BTC Delta Metrics:
         - LP BTC size: ${lpBtcDelta.toFixed(4)} BTC
         - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
-        - Net BTC delta: ${netBtcDelta.toFixed(4)} BTC (${netBtcDeltaPercent.toFixed(2)}% of position)
+        - Net BTC delta: $${netBtcDeltaValue.toFixed(2)} (${netBtcDelta.toFixed(4)} BTC)
         Performance Metrics:
         - LP APR: ${lpApr.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
