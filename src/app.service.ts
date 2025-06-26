@@ -56,7 +56,7 @@ export class AppService {
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = 0;
-  private hedgePositionPnL = 0; // Hyperliquid unrealized PnL in USD
+  private initialRealizedHedgePnL = 0; // Hyperliquid unrealized PnL in USD
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
@@ -76,6 +76,15 @@ export class AppService {
 
   async bootstrap() {
     this.logger.log('Starting BTC/USDC LP strategy...');
+
+    try {
+      this.logger.log('Getting realized PnL...');
+      this.initialRealizedHedgePnL = await this.hyperliquidService.getRealizedPnL();
+      this.logger.log(`Initial realized PnL: $${this.initialRealizedHedgePnL.toFixed(2)}`);
+    } catch (error) {
+      this.logger.error(`Failed to get realized PnL: ${error.message}`);
+      throw error;
+    }
     
     try {
       // Initialize LP service based on provider selection
@@ -105,10 +114,8 @@ export class AppService {
 
   private async monitorPosition() {
     try {
+      this.logger.log('Getting current hedge position...');
       const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
-      if(currentHedgePosition) {
-        this.hedgePositionPnL = Number(currentHedgePosition.position.unrealizedPnl);
-      }
   
       // Get current position state
       const position = await this.getLpPosition();
@@ -184,8 +191,13 @@ export class AppService {
       const positionStartTime = new Date(positionStartDate).getTime();
       const timeElapsed = (Date.now() - positionStartTime) / (1000 * 60 * 60 * 24); // in days
 
-      // Calculate APR: ((fees + hedge unrealized PnL) / position value) * (365 / days elapsed)
-      const totalPositionValue = positionValue + this.hedgePositionPnL;
+      // Calculate APR: ((fees + hedge PnL) / position value) * (365 / days elapsed)
+      const unrealizedHedgePnL = await this.hyperliquidService.getUnrealizedPnL('BTC');
+      const currentRealizedPnL = await this.hyperliquidService.getRealizedPnL();
+      const hedgePnL = (currentRealizedPnL - this.initialRealizedHedgePnL) + unrealizedHedgePnL;
+      const totalPositionValue = positionValue + hedgePnL;
+
+      const lpAPR = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
       const totalPositionAPR = timeElapsed > 0 ? (totalFeesValue / totalPositionValue) * (365 / timeElapsed) * 100 : 0;
       
       // Calculate net APR including impermanent loss
@@ -316,8 +328,9 @@ export class AppService {
         - Net BTC delta: $${netBtcDeltaValue.toFixed(2)} (${netBtcDelta.toFixed(4)} BTC)
         Performance Metrics:
         - LP Fees: $${totalFeesValue.toFixed(2)}
-        - Hedge PnL: $${this.hedgePositionPnL.toFixed(2)}
-        - Total Position APR: ${totalPositionAPR.toFixed(2)}%
+        - Hedge PnL: $${hedgePnL.toFixed(2)}
+        - LP APR: ${lpAPR.toFixed(2)}%
+        - Total Position APR (LP + Hedge): ${totalPositionAPR.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
         - Time Elapsed: ${timeElapsed.toFixed(1)} days
       `);

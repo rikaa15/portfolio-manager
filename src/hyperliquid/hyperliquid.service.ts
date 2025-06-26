@@ -192,4 +192,26 @@ export class HyperliquidService {
 
     return await this.exchangeClient.order(order);
   }
+
+  public async getRealizedPnL() {
+    try {
+      const userFills = await this.infoClient.userFills({ user: this.walletAddress });
+      let realizedPnl = 0;
+      for (const fill of userFills) {
+        realizedPnl += parseFloat(fill.closedPnl);
+      }
+      return realizedPnl;
+    } catch (error) {
+      console.error("Error fetching user fills:", error);
+      return 0;
+    }
+  }
+
+  public async getUnrealizedPnL(coin: string) {
+    const position = await this.getUserPosition(coin);
+    if (!position) return 0;
+
+    const unrealizedPnl = Number(position.position.unrealizedPnl);
+    return unrealizedPnl;
+  }
 }
