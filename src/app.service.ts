@@ -55,7 +55,8 @@ export class AppService {
   private outOfRangeStartTime: number | null = null;
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
-  private lastHedgeRebalance = Date.now();
+  private lastHedgeRebalance = 0;
+  private hedgeUnrealizedPnL = 0; // Hyperliquid unrealized PnL in USD
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
@@ -104,6 +105,12 @@ export class AppService {
 
   private async monitorPosition() {
     try {
+      const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
+      if(currentHedgePosition) {
+        this.hedgeUnrealizedPnL = Number(currentHedgePosition.position.unrealizedPnl);
+      }
+
+  
       // Get current position state
       const position = await this.getLpPosition();
       const lpProvider = this.configService.get('lpProvider');
@@ -158,7 +165,6 @@ export class AppService {
       
       // Calculate BTC delta from hedge position
       let hedgeBtcDelta = 0;
-      const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
       if (currentHedgePosition && currentHedgePosition.position) {
         hedgeBtcDelta = -Number(currentHedgePosition.position.szi); // Negative because it's a short position
       }

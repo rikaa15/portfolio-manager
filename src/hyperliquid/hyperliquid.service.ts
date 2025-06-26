@@ -26,14 +26,16 @@ export class HyperliquidService {
   }
 
   async bootstrap() {
-    await this.infoClient.clearinghouseState({ user: this.walletAddress });
+    const currentState = await this.getCurrentState()
     this.logger.log('HyperliquidService bootstrap completed');
   }
 
+  async getCurrentState() {
+    return await this.infoClient.clearinghouseState({ user: this.walletAddress });
+  }
+
   async getUserPosition(coin: string) {
-    const data = await this.infoClient.clearinghouseState({
-      user: this.walletAddress,
-    });
+    const data = await this.getCurrentState()
     return data.assetPositions.find((p) => p.position.coin === coin);
   }
 
