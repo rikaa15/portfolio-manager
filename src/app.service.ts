@@ -56,7 +56,7 @@ export class AppService {
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = 0;
-  private hedgeUnrealizedPnL = 0; // Hyperliquid unrealized PnL in USD
+  private hedgePositionPnL = 0; // Hyperliquid unrealized PnL in USD
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
@@ -107,14 +107,13 @@ export class AppService {
     try {
       const currentHedgePosition = await this.hyperliquidService.getUserPosition('BTC');
       if(currentHedgePosition) {
-        this.hedgeUnrealizedPnL = Number(currentHedgePosition.position.unrealizedPnl);
+        this.hedgePositionPnL = Number(currentHedgePosition.position.unrealizedPnl);
       }
-
   
       // Get current position state
       const position = await this.getLpPosition();
       const lpProvider = this.configService.get('lpProvider');
-      console.log(`${lpProvider} position:`, position);
+      this.logger.log(`${lpProvider} position:`, position);
 
       // TODO: get from subgraph / api
       const positionStartDate = this.configService.get('uniswap').positionCreationDate;
@@ -185,11 +184,12 @@ export class AppService {
       const positionStartTime = new Date(positionStartDate).getTime();
       const timeElapsed = (Date.now() - positionStartTime) / (1000 * 60 * 60 * 24); // in days
 
-      // Calculate APR: (fees / position value) * (365 / days elapsed)
-      const lpApr = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
+      // Calculate APR: ((fees + hedge unrealized PnL) / position value) * (365 / days elapsed)
+      const totalPositionValue = positionValue + this.hedgePositionPnL;
+      const totalPositionAPR = timeElapsed > 0 ? (totalFeesValue / totalPositionValue) * (365 / timeElapsed) * 100 : 0;
       
       // Calculate net APR including impermanent loss
-      const netApr = lpApr - Math.abs(impermanentLoss);
+      const netApr = totalPositionAPR - Math.abs(impermanentLoss);
       
       // Calculate price range based on current price
       const lowerPrice = currentPrice * (1 - this.PRICE_RANGE_PERCENT / 2);
@@ -315,7 +315,9 @@ export class AppService {
         - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
         - Net BTC delta: $${netBtcDeltaValue.toFixed(2)} (${netBtcDelta.toFixed(4)} BTC)
         Performance Metrics:
-        - LP APR: ${lpApr.toFixed(2)}%
+        - LP Fees: $${totalFeesValue.toFixed(2)}
+        - Hedge PnL: $${this.hedgePositionPnL.toFixed(2)}
+        - Total Position APR: ${totalPositionAPR.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
         - Time Elapsed: ${timeElapsed.toFixed(1)} days
       `);
