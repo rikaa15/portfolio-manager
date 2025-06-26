@@ -1,7 +1,7 @@
-import axios from 'axios';
 import 'dotenv/config';
-
-const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
+import { fetchPoolInfo, fetchPoolDayPrices } from './subgraph.client';
+import { PositionType } from './types';
+import { UniswapPosition } from './uniswap-lp.position';
 
 const POOL_ADDRESS = '0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35';
 const INITIAL_INVESTMENT = 10000; // $10,000 USD
@@ -15,225 +15,29 @@ const logger = {
   },
 };
 
-const client = axios.create({
-  baseURL:
-    'https://gateway.thegraph.com/api/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV',
-  headers: {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${SUBGRAPH_API_KEY}`,
-  },
-});
-
 // Date helpers
-const getUnixTimestamp = (dateString: string): number => {
-  return Math.floor(new Date(dateString).getTime() / 1000);
-};
-
 const formatDate = (unixTimestamp: number): string => {
   return new Date(unixTimestamp * 1000).toISOString().split('T')[0];
 };
 
-// GraphQL queries
-const POOL_INFO_QUERY = `
-  query PoolInfo($poolId: ID!) {
-    pool(id: $poolId) {
-      id
-      createdAtTimestamp
-      token0 {
-        symbol
-        decimals
-      }
-      token1 {
-        symbol
-        decimals
-      }
-      feeTier
-      totalValueLockedUSD
-    }
-  }
-`;
-
-const POOL_DAY_DATA_QUERY = `
-  query PoolDayData($poolId: ID!, $startDate: Int!, $endDate: Int!) {
-    poolDayDatas(
-      where: { 
-        pool: $poolId, 
-        date_gte: $startDate, 
-        date_lte: $endDate 
-      }
-      orderBy: date
-      orderDirection: asc
-      first: 1000
-    ) {
-      date
-      volumeUSD
-      feesUSD
-      tvlUSD
-      token0Price
-      token1Price
-      liquidity
-      tick
-    }
-  }
-`;
-
-interface PoolInfo {
-  id: string;
-  createdAtTimestamp: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-  feeTier: string;
-  totalValueLockedUSD: string;
-}
-
-interface PoolDayData {
-  date: number;
-  volumeUSD: string;
-  feesUSD: string;
-  tvlUSD: string;
-  token0Price: string;
-  token1Price: string;
-  liquidity: string;
-  tick: string;
-}
-
-/**
- * Execute GraphQL query against Uniswap V3 subgraph
- */
-async function executeQuery(
-  query: string,
-  variables: any,
-  operationName?: string,
-): Promise<any> {
-  try {
-    const requestData = {
-      query,
-      variables,
-      operationName,
-    };
-
-    const { data } = await client.post('', requestData);
-
-    if (data.errors && data.errors.length > 0) {
-      throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
-    }
-
-    return data.data;
-  } catch (error: any) {
-    if (error.response) {
-      logger.error(
-        `Query failed: ${error.response.status} ${error.response.statusText}`,
-      );
-      if (error.response.data) {
-        logger.error(`Response: ${JSON.stringify(error.response.data)}`);
-      }
-    } else if (error.message) {
-      logger.error(`Error: ${error.message}`);
-    } else {
-      logger.error(`Unknown error: ${String(error)}`);
-    }
-    throw error;
-  }
-}
-
-/**
- * Get pool basic information
- */
-async function getPoolInfo(poolAddress: string): Promise<PoolInfo> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-
-  const data = await executeQuery(
-    POOL_INFO_QUERY,
-    {
-      poolId: formattedPoolAddress,
-    },
-    'PoolInfo',
-  );
-
-  if (!data?.pool) {
-    throw new Error('Pool not found');
-  }
-
-  return data.pool;
-}
-
-/**
- * Get historical daily data for the pool
- */
-async function getPoolDayData(
-  poolAddress: string,
-  startDate: string,
-  endDate: string,
-): Promise<PoolDayData[]> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-  const startTimestamp = getUnixTimestamp(startDate);
-  const endTimestamp = getUnixTimestamp(endDate);
-
-  const data = await executeQuery(
-    POOL_DAY_DATA_QUERY,
-    {
-      poolId: formattedPoolAddress,
-      startDate: startTimestamp,
-      endDate: endTimestamp,
-    },
-    'PoolDayData',
-  );
-
-  if (!data?.poolDayDatas) {
-    logger.error('No pool day data returned from GraphQL query');
-    return [];
-  }
-
-  return data.poolDayDatas;
-}
-
-/**
- * Calculate impermanent loss percentage
- */
-function calculateImpermanentLoss(
-  currentToken0Price: number,
-  currentToken1Price: number,
-  initialToken0Price: number,
-  initialToken1Price: number,
-): number {
-  // Price ratio: relative change between token0 and token1 prices
-  const priceRatio =
-    currentToken0Price /
-    initialToken0Price /
-    (currentToken1Price / initialToken1Price);
-
-  // Square root from constant product formula (x * y = k) used in AMMs
-  const sqrtPriceRatio = Math.sqrt(priceRatio);
-
-  // LP value formula: accounts for automatic rebalancing in AMM pools
-  const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
-
-  // Holding value normalized to 1 (100% baseline)
-  const holdValue = 1;
-
-  // Impermanent loss: LP performance vs holding 50/50 portfolio
-  return (lpValue - holdValue) * 100; // Convert to percentage
-}
-
-/**
- * Run backtest simulation
- */
 async function runBacktest(
   poolAddress: string,
   startDate: string,
   endDate: string,
   initialAmount: number,
+  positionType: PositionType = 'full-range',
 ): Promise<void> {
-  logger.log('=== WBTC/USDC LP Backtest ===');
+  logger.log(`=== WBTC/USDC LP Backtest (${positionType.toUpperCase()}) ===`);
   logger.log(`Pool: ${poolAddress}`);
   logger.log(`Period: ${startDate} to ${endDate}`);
   logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
+  logger.log(`Position Type: ${positionType}`);
   logger.log('');
 
   try {
     // Get pool information
     logger.log('Fetching pool information...');
-    const poolInfo = await getPoolInfo(poolAddress);
+    const poolInfo = await fetchPoolInfo(poolAddress);
     logger.log(
       `Pool Info: ${poolInfo.token0.symbol}/${poolInfo.token1.symbol}`,
     );
@@ -242,7 +46,11 @@ async function runBacktest(
 
     // Get historical data
     logger.log('Fetching historical data...');
-    const poolDayData = await getPoolDayData(poolAddress, startDate, endDate);
+    const poolDayData = await fetchPoolDayPrices(
+      poolAddress,
+      startDate,
+      endDate,
+    );
 
     if (poolDayData.length === 0) {
       logger.log('No data found for the specified period');
@@ -252,82 +60,137 @@ async function runBacktest(
     logger.log(`Found ${poolDayData.length} days of data`);
     logger.log('');
 
-    // Calculate initial LP share based on first day's TVL
+    // Initialize position using the new Position class
     const firstDay = poolDayData[0];
-    const lpSharePercentage = initialAmount / parseFloat(firstDay.tvlUSD);
-
-    logger.log(`Initial TVL: $${parseFloat(firstDay.tvlUSD).toLocaleString()}`);
-    logger.log(`LP Share: ${(lpSharePercentage * 100).toFixed(6)}%`);
-    logger.log('');
-
-    // Track cumulative values
-    let cumulativeFees = 0;
+    const initialTick = parseInt(firstDay.tick);
+    const initialTvl = parseFloat(firstDay.tvlUSD);
     const initialToken0Price = parseFloat(firstDay.token0Price);
     const initialToken1Price = parseFloat(firstDay.token1Price);
+
+    const position = new UniswapPosition(
+      initialAmount,
+      positionType,
+      initialTick,
+      initialTvl,
+      initialToken0Price,
+      initialToken1Price,
+      60, // tick spacing for WBTC/USDC 0.3% pool
+    );
+
+    // Show position setup information
+    const positionInfo = position.positionInfo;
+    logger.log(`Initial TVL: $${initialTvl.toLocaleString()}`);
+    logger.log(`LP Share: ${(positionInfo.sharePercentage * 100).toFixed(6)}%`);
+
+    if (positionType !== 'full-range') {
+      logger.log(
+        `Position Range: ${positionInfo.range.priceLower.toFixed(2)} - ${positionInfo.range.priceUpper.toFixed(2)}`,
+      );
+      logger.log(
+        `Range Width: ±${(positionInfo.range.rangeWidth * 50).toFixed(1)}%`,
+      );
+      logger.log(
+        `Concentration Multiplier: ${positionInfo.multiplier.toFixed(1)}x`,
+      );
+      logger.log(
+        `Expected APR Boost: ${positionInfo.multiplier.toFixed(1)}x higher when in range`,
+      );
+    }
+    logger.log('');
 
     logger.log('Daily Performance:');
     logger.log('');
 
-    // Process each day
     poolDayData.forEach((dayData, index) => {
       const dayNumber = index + 1;
       const date = formatDate(dayData.date);
 
-      // Calculate daily fee earnings
-      const dailyFees = parseFloat(dayData.feesUSD) * lpSharePercentage;
-      cumulativeFees += dailyFees;
+      // Update position state for this day
+      position.updateDaily(dayData);
 
-      // Calculate current position value
+      // Calculate current position value and IL
       const currentTVL = parseFloat(dayData.tvlUSD);
-      const currentPositionValue = currentTVL * lpSharePercentage;
+      const currentPositionValue = position.getCurrentPositionValue(currentTVL);
 
-      // Calculate impermanent loss
       const currentToken0Price = parseFloat(dayData.token0Price);
       const currentToken1Price = parseFloat(dayData.token1Price);
-      const impermanentLoss = calculateImpermanentLoss(
+      const impermanentLoss = position.calculateImpermanentLoss(
         currentToken0Price,
         currentToken1Price,
-        initialToken0Price,
-        initialToken1Price,
       );
 
       // Calculate total PnL
       const positionPnL = currentPositionValue - initialAmount;
-      const totalPnL = positionPnL + cumulativeFees;
+      const totalPnL = positionPnL + position.totalFeesEarned;
 
-      // Calculate running APR based on fees only
-      const daysElapsed = dayNumber;
-      const runningAPR =
-        (cumulativeFees / initialAmount) * (365 / daysElapsed) * 100;
+      // Get running APR from position
+      const runningAPR = position.getRunningAPR();
 
-      // Clean output: Position Value, IL, PnL, APR
+      // Check if position is in range for display
+      const currentTick = parseInt(dayData.tick);
+      const isInRange =
+        currentTick >= positionInfo.range.tickLower &&
+        currentTick <= positionInfo.range.tickUpper;
+
+      const rangeStatus =
+        positionType === 'full-range'
+          ? ''
+          : isInRange
+            ? ' [IN-RANGE]'
+            : ' [OUT-OF-RANGE]';
+
       logger.log(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
           `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(1)}%`,
+          `APR: ${runningAPR.toFixed(1)}%${rangeStatus}`,
       );
     });
 
-    // Final summary
+    // Final summary using position metrics
     const lastDay = poolDayData[poolDayData.length - 1];
-    const finalPositionValue = parseFloat(lastDay.tvlUSD) * lpSharePercentage;
+    const finalPositionValue = position.getCurrentPositionValue(
+      parseFloat(lastDay.tvlUSD),
+    );
     const totalReturn =
-      ((finalPositionValue + cumulativeFees - initialAmount) / initialAmount) *
+      ((finalPositionValue + position.totalFeesEarned - initialAmount) /
+        initialAmount) *
       100;
-    const finalAPR =
-      (cumulativeFees / initialAmount) * (365 / poolDayData.length) * 100;
+    const finalAPR = position.getRunningAPR();
+    const timeInRange = position.getTimeInRange();
 
     logger.log('');
     logger.log('=== Final Summary ===');
+    logger.log(`Position Type: ${positionType.toUpperCase()}`);
     logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
     logger.log(`Final Position Value: $${finalPositionValue.toLocaleString()}`);
-    logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
+    logger.log(
+      `Total Fees Collected: $${position.totalFeesEarned.toLocaleString()}`,
+    );
     logger.log(
       `Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`,
     );
     logger.log(`Annualized APR (Fees Only): ${finalAPR.toFixed(2)}%`);
+
+    if (positionType !== 'full-range') {
+      logger.log(`Time in Range: ${timeInRange.toFixed(1)}%`);
+      logger.log(
+        `Days In Range: ${position.totalDaysInRange} / ${position.daysActive}`,
+      );
+
+      // Calculate effective APR (accounting for time out of range)
+      const effectiveAPR = finalAPR * (timeInRange / 100);
+      logger.log(
+        `Effective APR (adjusted for range): ${effectiveAPR.toFixed(2)}%`,
+      );
+
+      // Show theoretical max APR if 100% in range
+      const theoreticalMaxAPR = finalAPR; // This already includes the multiplier
+      logger.log(
+        `Theoretical Max APR (100% in range): ${theoreticalMaxAPR.toFixed(2)}%`,
+      );
+    }
   } catch (error: any) {
     if (error.message) {
       logger.error('Backtest failed: ' + error.message);
@@ -338,14 +201,15 @@ async function runBacktest(
 }
 
 describe('Uniswap LP Backtesting', () => {
-  it('should backtest WBTC/USDC LP performance for 1 year', async () => {
+  it('should backtest WBTC/USDC LP performance for 10% range position', async () => {
     await runBacktest(
       POOL_ADDRESS,
-      '2024-05-29', // Start date (1 year ago)
-      '2025-05-29', // End date (today)
+      '2024-05-29',
+      '2025-05-29',
       INITIAL_INVESTMENT,
+      '10%',
     );
 
     expect(true).toBe(true);
-  }, 60000); // 60 second timeout for API calls
+  }, 60000);
 });
