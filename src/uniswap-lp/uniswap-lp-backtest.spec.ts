@@ -26,9 +26,11 @@ async function runBacktest(
   endDate: string,
   initialAmount: number,
   positionType: PositionType = 'full-range',
+  feePercentage: string = '0.3%',
 ): Promise<void> {
   logger.log(`=== WBTC/USDC LP Backtest (${positionType.toUpperCase()}) ===`);
   logger.log(`Pool: ${poolAddress}`);
+  logger.log(`Fee Tier: ${feePercentage}`);
   logger.log(`Period: ${startDate} to ${endDate}`);
   logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
   logger.log(`Position Type: ${positionType}`);
@@ -60,47 +62,31 @@ async function runBacktest(
     logger.log(`Found ${poolDayData.length} days of data`);
     logger.log('');
 
-    // Initialize position using the new Position class
     const firstDay = poolDayData[0];
     const initialTick = parseInt(firstDay.tick);
     const initialTvl = parseFloat(firstDay.tvlUSD);
     const initialToken0Price = parseFloat(firstDay.token0Price);
     const initialToken1Price = parseFloat(firstDay.token1Price);
 
-    const position = new UniswapPosition(
+    const position = UniswapPosition.create(
       initialAmount,
       positionType,
       initialTick,
       initialTvl,
       initialToken0Price,
       initialToken1Price,
-      60, // tick spacing for WBTC/USDC 0.3% pool
+      feePercentage,
     );
 
-    // Show position setup information
     const positionInfo = position.positionInfo;
     logger.log(`Initial TVL: $${initialTvl.toLocaleString()}`);
     logger.log(`LP Share: ${(positionInfo.sharePercentage * 100).toFixed(6)}%`);
-
-    if (positionType !== 'full-range') {
-      logger.log(
-        `Position Range: ${positionInfo.range.priceLower.toFixed(2)} - ${positionInfo.range.priceUpper.toFixed(2)}`,
-      );
-      logger.log(
-        `Range Width: ±${(positionInfo.range.rangeWidth * 50).toFixed(1)}%`,
-      );
-      logger.log(
-        `Concentration Multiplier: ${positionInfo.multiplier.toFixed(1)}x`,
-      );
-      logger.log(
-        `Expected APR Boost: ${positionInfo.multiplier.toFixed(1)}x higher when in range`,
-      );
-    }
+    logger.log(`Tick Spacing: ${positionInfo.tickSpacing}`);
     logger.log('');
-
     logger.log('Daily Performance:');
     logger.log('');
 
+    // Process each day with enhanced logging
     poolDayData.forEach((dayData, index) => {
       const dayNumber = index + 1;
       const date = formatDate(dayData.date);
@@ -126,7 +112,6 @@ async function runBacktest(
       // Get running APR from position
       const runningAPR = position.getRunningAPR();
 
-      // Check if position is in range for display
       const currentTick = parseInt(dayData.tick);
       const isInRange =
         currentTick >= positionInfo.range.tickLower &&
@@ -139,16 +124,19 @@ async function runBacktest(
             ? ' [IN-RANGE]'
             : ' [OUT-OF-RANGE]';
 
+      const tickInfo =
+        positionType !== 'full-range' ? ` | Tick: ${currentTick}` : '';
+
       logger.log(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
           `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(1)}%${rangeStatus}`,
+          `APR: ${runningAPR.toFixed(1)}%${rangeStatus}${tickInfo}`,
       );
     });
 
-    // Final summary using position metrics
+    // Enhanced final summary
     const lastDay = poolDayData[poolDayData.length - 1];
     const finalPositionValue = position.getCurrentPositionValue(
       parseFloat(lastDay.tvlUSD),
@@ -163,6 +151,8 @@ async function runBacktest(
     logger.log('');
     logger.log('=== Final Summary ===');
     logger.log(`Position Type: ${positionType.toUpperCase()}`);
+    logger.log(`Fee Tier: ${feePercentage}`);
+    logger.log(`Tick Spacing: ${positionInfo.tickSpacing}`);
     logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
     logger.log(`Final Position Value: $${finalPositionValue.toLocaleString()}`);
     logger.log(
@@ -179,16 +169,15 @@ async function runBacktest(
         `Days In Range: ${position.totalDaysInRange} / ${position.daysActive}`,
       );
 
-      // Calculate effective APR (accounting for time out of range)
-      const effectiveAPR = finalAPR * (timeInRange / 100);
-      logger.log(
-        `Effective APR (adjusted for range): ${effectiveAPR.toFixed(2)}%`,
-      );
+      const rangeWidth =
+        positionInfo.range.tickUpper - positionInfo.range.tickLower;
+      logger.log(`Range Width: ${rangeWidth} ticks`);
 
-      // Show theoretical max APR if 100% in range
-      const theoreticalMaxAPR = finalAPR; // This already includes the multiplier
+      // Calculate average concentration during in-range periods
+      const avgConcentration =
+        rangeWidth > 0 ? Math.sqrt((887272 * 2) / rangeWidth) : 0;
       logger.log(
-        `Theoretical Max APR (100% in range): ${theoreticalMaxAPR.toFixed(2)}%`,
+        `Average Concentration Factor: ${avgConcentration.toFixed(1)}x`,
       );
     }
   } catch (error: any) {
@@ -204,10 +193,11 @@ describe('Uniswap LP Backtesting', () => {
   it('should backtest WBTC/USDC LP performance for 10% range position', async () => {
     await runBacktest(
       POOL_ADDRESS,
-      '2024-05-29',
-      '2025-05-29',
+      '2025-05-25',
+      '2025-06-25',
       INITIAL_INVESTMENT,
       '10%',
+      '0.3%',
     );
 
     expect(true).toBe(true);

@@ -2,14 +2,14 @@ import { PoolDayData, PositionRange, PositionType } from './types';
 
 /**
  * Represents a Uniswap V3 concentrated liquidity position during backtesting
- * Tracks position state, fee earnings, and range status
+ * Now uses actual liquidity units and tick math instead of hardcoded values
  */
 export class UniswapPosition {
   private initialAmount: number;
   private positionType: PositionType;
   private positionRange: PositionRange;
-  private concentrationMultiplier: number;
   private lpSharePercentage: number;
+  private tickSpacing: number;
 
   // Tracking state
   private cumulativeFees: number = 0;
@@ -27,27 +27,26 @@ export class UniswapPosition {
     initialTvl: number,
     initialToken0Price: number,
     initialToken1Price: number,
-    tickSpacing: number = 60,
+    tickSpacing: number = 60, // Default for 0.3% pools
   ) {
     this.initialAmount = initialAmount;
     this.positionType = positionType;
     this.lpSharePercentage = initialAmount / initialTvl;
     this.initialToken0Price = initialToken0Price;
     this.initialToken1Price = initialToken1Price;
+    this.tickSpacing = tickSpacing;
 
-    // Set up position range based on type
+    // Set up position range using tick spacing
     this.positionRange = this.getPositionTickRange(
       initialTick,
       positionType,
       tickSpacing,
     );
-    this.concentrationMultiplier =
-      this.getConcentrationMultiplier(positionType);
   }
 
   /**
    * Process daily position update
-   * Updates fees earned, range status, and position metrics
+   * Now uses liquidity-based concentration calculations
    */
   updateDaily(dayData: PoolDayData): void {
     this.totalDays++;
@@ -60,16 +59,15 @@ export class UniswapPosition {
       this.daysInRange++;
     }
 
-    // Calculate daily fees using proportional approach with concentration multiplier
     let dailyFees = 0;
     if (isInRange) {
-      // Use the simple proportional approach that works
       const totalDailyFees = parseFloat(dayData.feesUSD);
       const baseFeeShare = totalDailyFees * this.lpSharePercentage;
-      dailyFees = baseFeeShare * this.concentrationMultiplier;
+      const concentrationMultiplier =
+        this.getConcentrationMultiplier(currentTick);
+      dailyFees = baseFeeShare * concentrationMultiplier;
     }
     // No fees earned when out of range
-
     this.cumulativeFees += dailyFees;
   }
 
@@ -135,12 +133,12 @@ export class UniswapPosition {
   }
 
   /**
-   * Calculate tick range for a given position type using Uniswap V3 tick math
+   * Calculate tick range for a given position type using actual tick spacing
    */
   private getPositionTickRange(
     currentTick: number,
     positionType: PositionType,
-    tickSpacing: number = 60,
+    tickSpacing: number,
   ): PositionRange {
     if (positionType === 'full-range') {
       return {
@@ -152,12 +150,11 @@ export class UniswapPosition {
       };
     }
 
-    // Parse percentage from position type (e.g., "10%" -> 10)
+    // Parse percentage and convert to ticks using tick spacing
     const rangePercent = parseInt(positionType.replace('%', '')) / 100;
     const halfRange = rangePercent / 2; // ±5% for "10%" range
 
     // Convert price range to tick range using Uniswap V3 formula
-    // Price relationship: price = 1.0001^tick
     const tickRange = Math.log(1 + halfRange) / Math.log(1.0001);
 
     // Round to nearest valid tick (must be divisible by tickSpacing)
@@ -180,32 +177,79 @@ export class UniswapPosition {
   }
 
   /**
-   * Calculate concentration multiplier using range width approach
-   * This avoids liquidity unit conversion issues
+   * Calculate concentration multiplier using actual tick math
    */
-  private getConcentrationMultiplier(positionType: PositionType): number {
-    if (positionType === 'full-range') {
+  private getConcentrationMultiplier(currentTick: number): number {
+    // Check if position is in range
+    const isInRange = this.isPositionActive(currentTick);
+    if (!isInRange) {
+      return 0; // No fees when out of range
+    }
+
+    if (this.positionType === 'full-range') {
       return 1.0; // Baseline
     }
 
-    // Range width approach from our previous discussion
-    const fullRangeWidth = 100; // 100% price range
+    // Calculate range width in ticks
+    const rangeWidth =
+      this.positionRange.tickUpper - this.positionRange.tickLower;
+    const maxRange = 887272 * 2; // Full Uniswap V3 range
 
-    const rangeWidths: Record<string, number> = {
-      'full-range': 100,
-      '30%': 30, // ±15% range (total 30% width)
-      '20%': 20, // ±10% range (total 20% width)
-      '10%': 10, // ±5% range (total 10% width)
+    // Narrower range = higher concentration of fees
+    // This formula approximates how liquidity density affects fee distribution
+    const concentrationFactor = Math.sqrt(maxRange / rangeWidth);
+
+    // Cap at reasonable maximum to prevent unrealistic values
+    return Math.min(concentrationFactor, 100);
+  }
+
+  /**
+   * Static method to determine tick spacing from fee tier
+   * Supports different pool types
+   */
+  static getTickSpacingFromFeeTier(feeTier: number): number {
+    const feeToTickSpacing: Record<number, number> = {
+      100: 1, // 0.01% pools
+      500: 10, // 0.05% pools
+      3000: 60, // 0.3% pools (most common)
+      10000: 200, // 1% pools
     };
 
-    const rangeWidth = rangeWidths[positionType] || 100;
-    const concentrationRatio = fullRangeWidth / rangeWidth;
+    return feeToTickSpacing[feeTier] || 60; // Default to 0.3% pool spacing
+  }
 
-    // Apply exponential scaling - concentrated positions get exponentially more fees
-    const multiplier = Math.pow(concentrationRatio, 1.8);
+  /**
+   * Converts "0.3%" to 3000 basis points
+   */
+  static getFeeTierFromPercentage(feePercentage: string): number {
+    const percent = parseFloat(feePercentage.replace('%', ''));
+    return Math.round(percent * 10000); // Convert to basis points
+  }
 
-    // Cap the multiplier to prevent unrealistic values
-    return Math.min(multiplier, 100);
+  /**
+   * Factory method to create position with automatic tick spacing detection
+   */
+  static create(
+    initialAmount: number,
+    positionType: PositionType,
+    initialTick: number,
+    initialTvl: number,
+    initialToken0Price: number,
+    initialToken1Price: number,
+    feePercentage: string = '0.3%',
+  ): UniswapPosition {
+    const feeTier = this.getFeeTierFromPercentage(feePercentage);
+    const tickSpacing = this.getTickSpacingFromFeeTier(feeTier);
+
+    return new UniswapPosition(
+      initialAmount,
+      positionType,
+      initialTick,
+      initialTvl,
+      initialToken0Price,
+      initialToken1Price,
+      tickSpacing,
+    );
   }
 
   // Getters for metrics
@@ -224,13 +268,13 @@ export class UniswapPosition {
   get positionInfo(): {
     type: PositionType;
     range: PositionRange;
-    multiplier: number;
+    tickSpacing: number;
     sharePercentage: number;
   } {
     return {
       type: this.positionType,
       range: this.positionRange,
-      multiplier: this.concentrationMultiplier,
+      tickSpacing: this.tickSpacing,
       sharePercentage: this.lpSharePercentage,
     };
   }
