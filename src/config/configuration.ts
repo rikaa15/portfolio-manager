@@ -13,9 +13,14 @@ export interface BaseConfig {
 export interface Config {
   port: number;
   walletAddress: string;
+  lpProvider: 'uniswap' | 'aerodrome';
   uniswap: {
     positionId: string;
     positionCreationDate: string;
+  };
+  aerodrome: {
+    poolAddress: string;
+    gaugeAddress: string;
   };
   ethereum: {
     rpcUrl: string;
@@ -40,9 +45,14 @@ export interface Config {
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
+  lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1016832',
     positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-06-25',
+  },
+  aerodrome: {
+    poolAddress: process.env.AERODROME_POOL_ADDRESS || '',
+    gaugeAddress: process.env.AERODROME_GAUGE_ADDRESS || '',
   },
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',
@@ -65,7 +75,12 @@ export default (): Config => ({
     contracts: {
       factory: '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A',
       positionManager: '0x827922686190790b37229fd06084350E74485b72',
-      pools: ['0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb'], // 0: default
+      pools: [
+        process.env.AERODROME_POOL_ADDRESS, // User's specific pool from env
+        '0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb', // cbBTC/USDC (volatile)
+        '0x1F40e42E92Cd3dDEC8Ac7d950A4E15378a0A7d8e', // WETH/USDC (volatile) 
+        '0x0b1A513ee24972DAEf112bC777a5610d4325C9e7', // cbBTC/WBTC (stable)
+      ].filter(Boolean).filter((pool, index, arr) => arr.indexOf(pool) === index), // Remove duplicates and empty values
     },
   },
   hyperliquid: {

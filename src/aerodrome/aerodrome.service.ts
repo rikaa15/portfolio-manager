@@ -78,6 +78,7 @@ export class AerodromeLpService {
         poolAddress,
         this.config.contracts.positionManager,
         this.provider,
+        this.configService.get('aerodrome').gaugeAddress,
       );
 
       if (!userPosition) {

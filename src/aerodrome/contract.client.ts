@@ -59,26 +59,37 @@ export async function fetchPoolInfoDirect(
   poolAddress: string,
   provider: JsonRpcProvider,
   blockNumber?: number,
+  knownGaugeAddress?: string,
 ): Promise<ContractPoolInfo> {
   try {
     const overrides = blockNumber ? { blockTag: blockNumber } : {};
     const poolContract = new ethers.Contract(poolAddress, POOL_ABI, provider);
 
+    // Try to get basic pool info first
     const [
       token0Address,
       token1Address,
       liquidity,
       stakedLiquidity,
       slot0,
-      gaugeAddress,
     ] = await Promise.all([
       poolContract.token0(overrides),
       poolContract.token1(overrides),
       poolContract.liquidity(overrides),
       poolContract.stakedLiquidity(overrides),
       poolContract.slot0(overrides),
-      poolContract.gauge(overrides),
     ]);
+
+    // Try to get gauge address, but handle cases where it might not exist
+    let gaugeAddress = knownGaugeAddress || '0x0000000000000000000000000000000000000000';
+    try {
+      const poolGaugeAddress = await poolContract.gauge(overrides);
+      gaugeAddress = poolGaugeAddress;
+    } catch (error) {
+      if (knownGaugeAddress) {
+        gaugeAddress = knownGaugeAddress;
+      }
+    }
 
     const token0Contract = new ethers.Contract(
       token0Address,
@@ -311,6 +322,7 @@ export async function getUserStakedPosition(
   poolAddress: string,
   positionManagerAddress: string,
   provider: JsonRpcProvider,
+  knownGaugeAddress?: string,
 ): Promise<{
   tokenId: string;
   position: any;
@@ -318,7 +330,7 @@ export async function getUserStakedPosition(
 } | null> {
   try {
     // Get pool info first
-    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider);
+    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider, undefined, knownGaugeAddress);
 
     // Check if user has staked positions in the gauge
     const gaugeContract = new ethers.Contract(

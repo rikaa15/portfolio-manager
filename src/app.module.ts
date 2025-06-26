@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HyperliquidService } from './hyperliquid/hyperliquid.service';
 import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
+import { AerodromeLpService } from './aerodrome/aerodrome.service';
 import { AppConfigModule } from './config/config.module';
 import { FundingService } from './funding/funding.service';
 import { BinanceService } from './binance/binance.service';
@@ -14,6 +15,7 @@ import { BinanceService } from './binance/binance.service';
     AppService,
     HyperliquidService,
     UniswapLpService,
+    AerodromeLpService,
     FundingService,
     BinanceService,
   ],
