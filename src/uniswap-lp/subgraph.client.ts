@@ -1,5 +1,7 @@
+//subgraph.client.ts
 import axios from 'axios';
 import 'dotenv/config';
+import { CurrentPoolData, PoolDayData, PoolHourPrice, PoolInfo } from './types';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -11,6 +13,10 @@ const client = axios.create({
     Authorization: `Bearer ${SUBGRAPH_API_KEY}`,
   },
 });
+
+const getUnixTimestamp = (dateString: string): number => {
+  return Math.floor(new Date(dateString).getTime() / 1000);
+};
 
 const POOL_PRICE_QUERY = `
   query PoolPrice($poolId: ID!) {
@@ -49,27 +55,6 @@ const POOL_INFO_QUERY = `
   }
 `;
 
-const POOL_DAY_PRICES_QUERY = `
-  query PoolDayPrices($poolId: ID!, $startTime: Int!, $endTime: Int!) {
-    poolDayDatas(
-      where: { 
-        pool: $poolId,
-        date_gte: $startTime,
-        date_lte: $endTime
-      }
-      orderBy: date
-      orderDirection: asc
-      first: 1000
-    ) {
-      date
-      token0Price
-      token1Price
-      tvlUSD
-      volumeUSD
-    }
-  }
-`;
-
 const POOL_HOUR_PRICES_QUERY = `
   query PoolHourPrices($poolId: ID!, $startTime: Int!, $endTime: Int!) {
     poolHourDatas(
@@ -91,38 +76,29 @@ const POOL_HOUR_PRICES_QUERY = `
   }
 `;
 
-export interface CurrentPoolData {
-  token0Price: string;
-  token1Price: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-}
-
-export interface PoolInfo {
-  id: string;
-  totalValueLockedUSD: string;
-  liquidity: string;
-  token0: { symbol: string; decimals: string };
-  token1: { symbol: string; decimals: string };
-  token0Price: string;
-  token1Price: string;
-}
-
-export interface PoolDayPrice {
-  date: number;
-  token0Price: string;
-  token1Price: string;
-  tvlUSD: string;
-  volumeUSD: string;
-}
-
-export interface PoolHourPrice {
-  periodStartUnix: number;
-  token0Price: string;
-  token1Price: string;
-  tvlUSD: string;
-  volumeUSD: string;
-}
+const POOL_DAY_DATA_QUERY = `
+  query PoolDayData($poolId: ID!, $startDate: Int!, $endDate: Int!) {
+    poolDayDatas(
+      where: { 
+        pool: $poolId, 
+        date_gte: $startDate, 
+        date_lte: $endDate 
+      }
+      orderBy: date
+      orderDirection: asc
+      first: 1000
+    ) {
+      date
+      volumeUSD
+      feesUSD
+      tvlUSD
+      token0Price
+      token1Price
+      liquidity
+      tick
+    }
+  }
+`;
 
 /**
  * Execute GraphQL query against Uniswap V3 subgraph
@@ -188,6 +164,9 @@ export async function fetchCurrentPoolData(
   return data.pool;
 }
 
+/**
+ * Get pool basic information
+ */
 export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
   const formattedPoolAddress = poolAddress.toLowerCase();
 
@@ -206,25 +185,30 @@ export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
   return data.pool;
 }
 
+/**
+ * Get historical daily data for the pool
+ */
 export async function fetchPoolDayPrices(
   poolAddress: string,
-  startTime: number,
-  endTime: number,
-): Promise<PoolDayPrice[]> {
+  startDate: string,
+  endDate: string,
+): Promise<PoolDayData[]> {
   const formattedPoolAddress = poolAddress.toLowerCase();
+  const startTimestamp = getUnixTimestamp(startDate);
+  const endTimestamp = getUnixTimestamp(endDate);
 
   const data = await executeQuery(
-    POOL_DAY_PRICES_QUERY,
+    POOL_DAY_DATA_QUERY,
     {
       poolId: formattedPoolAddress,
-      startTime,
-      endTime,
+      startDate: startTimestamp,
+      endDate: endTimestamp,
     },
-    'PoolDayPrices',
+    'PoolDayData',
   );
 
   if (!data?.poolDayDatas) {
-    console.error('No pool day price data returned from GraphQL query');
+    console.error('No pool day data returned from GraphQL query');
     return [];
   }
 

@@ -6,7 +6,16 @@ import {
   fetchPoolDayPrices,
   fetchPoolHourPrices,
 } from './subgraph.client';
-import { LiquidityPosition } from './types';
+import { Position, PositionRange, PositionType } from './types';
+
+export const logger = {
+  log: (message: string) => {
+    process.stdout.write(message + '\n');
+  },
+  error: (message: string) => {
+    process.stderr.write(message + '\n');
+  },
+};
 
 /**
  * Get pool exchange rate (what Uniswap UI shows as "pool price")
@@ -85,7 +94,7 @@ export async function getPoolPriceHistory(
   if (interval === 'hourly') {
     rawData = await fetchPoolHourPrices(poolAddress, startTime, endTime);
   } else {
-    rawData = await fetchPoolDayPrices(poolAddress, startTime, endTime);
+    rawData = await fetchPoolDayPrices(poolAddress, startDate, endDate);
   }
 
   const processedData = rawData.map((item) => ({
@@ -264,13 +273,218 @@ export const formatPositionAmounts = (
   };
 };
 
-export interface FormattedLiquidityPosition extends LiquidityPosition {
-  formattedAmounts: {
-    liquidityToken0: string; // e.g., "0.00000485 WBTC"
-    liquidityToken1: string; // e.g., "0.526934 USDC"
-    walletToken0: string; // e.g., "1.25 WBTC"
-    walletToken1: string; // e.g., "5000.0 USDC"
-    uncollectedFees0: string; // e.g., "<0.001 WBTC"
-    uncollectedFees1: string; // e.g., "<0.001 USDC"
+/**
+ * Calculate tick range for a given position type
+ * Uses Uniswap V3 tick math to convert price ranges to tick bounds
+ */
+export function getPositionTickRange(
+  currentTick: number,
+  positionType: PositionType,
+  tickSpacing: number,
+): PositionRange {
+  if (positionType === 'full-range') {
+    // Full range: use extreme tick bounds
+    return {
+      tickLower: -887272, // Uniswap V3 minimum tick
+      tickUpper: 887272, // Uniswap V3 maximum tick
+      priceLower: 0,
+      priceUpper: Infinity,
+      rangeWidth: Infinity,
+    };
+  }
+
+  // Parse percentage from position type (e.g., "10%" -> 10)
+  const rangePercent = parseInt(positionType.replace('%', '')) / 100;
+  const halfRange = rangePercent / 2; // ±5% for "10%" range
+
+  // Convert price range to tick range
+  // Price relationship: price = 1.0001^tick
+  // For ±X% range: tickRange = log(1 ± X) / log(1.0001)
+  const tickRange = Math.log(1 + halfRange) / Math.log(1.0001);
+
+  // Round to nearest valid tick (must be divisible by tickSpacing)
+  const tickLower =
+    Math.floor((currentTick - tickRange) / tickSpacing) * tickSpacing;
+  const tickUpper =
+    Math.ceil((currentTick + tickRange) / tickSpacing) * tickSpacing;
+
+  // Convert back to prices for reference
+  const priceLower = Math.pow(1.0001, tickLower);
+  const priceUpper = Math.pow(1.0001, tickUpper);
+
+  return {
+    tickLower,
+    tickUpper,
+    priceLower,
+    priceUpper,
+    rangeWidth: rangePercent,
   };
+}
+
+/**
+ * Check if current tick is within position range
+ */
+export function isPositionActive(
+  currentTick: number,
+  positionRange: PositionRange,
+): boolean {
+  return (
+    currentTick >= positionRange.tickLower &&
+    currentTick <= positionRange.tickUpper
+  );
+}
+
+// /**
+//  * Calculate the concentration multiplier for a given position type
+//  * Using range width approach from previous discussion - much more reliable!
+//  */
+// export function getConcentrationMultiplier(
+//   positionType: PositionType,
+//   allPositions: Position[] = [],
+// ): number {
+//   if (positionType === 'full-range') {
+//     return 1.0; // Baseline
+//   }
+
+//   // Use range width approach for concentration calculation
+//   const fullRangeWidth = 100; // 100% price range
+
+//   const rangeWidths: Record<string, number> = {
+//     'full-range': 100,
+//     '30%': 30, // ±15% range (total 30% width)
+//     '20%': 20, // ±10% range (total 20% width)
+//     '10%': 10, // ±5% range (total 10% width)
+//   };
+
+//   const rangeWidth = rangeWidths[positionType] || 100;
+//   const concentrationRatio = fullRangeWidth / rangeWidth;
+
+//   // Apply exponential scaling - concentrated positions get exponentially more fees
+//   // Exponent of 1.5-2.0 matches empirical observations from Uniswap/Aerodrome
+//   const multiplier = Math.pow(concentrationRatio, 1.8);
+
+//   // Cap the multiplier to prevent unrealistic values
+//   return Math.min(multiplier, 100);
+// }
+
+/**
+ * Calculate impermanent loss for a concentrated position
+ * This accounts for the fact that concentrated positions behave differently
+ * when price moves outside their range
+ */
+export function calculateConcentratedImpermanentLoss(
+  currentPrice: number,
+  initialPrice: number,
+  positionRange: PositionRange,
+): number {
+  // If full range, use standard IL formula
+  if (positionRange.rangeWidth === Infinity) {
+    const priceRatio = currentPrice / initialPrice;
+    const sqrtPriceRatio = Math.sqrt(priceRatio);
+    const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
+    return (lpValue - 1) * 100;
+  }
+
+  // For concentrated positions, IL calculation depends on whether we're in range
+  const currentTick = Math.log(currentPrice) / Math.log(1.0001);
+  const isInRange =
+    currentTick >= positionRange.tickLower &&
+    currentTick <= positionRange.tickUpper;
+
+  if (isInRange) {
+    // Standard IL calculation when in range
+    const priceRatio = currentPrice / initialPrice;
+    const sqrtPriceRatio = Math.sqrt(priceRatio);
+    const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
+    return (lpValue - 1) * 100;
+  } else {
+    // When out of range, position becomes single-asset
+    if (currentTick < positionRange.tickLower) {
+      // Below range: 100% token0 (WBTC)
+      // IL = current BTC value vs initial balanced value
+      const priceChange = (currentPrice - initialPrice) / initialPrice;
+      return priceChange * 50; // Only half the position was BTC initially
+    } else {
+      // Above range: 100% token1 (USDC)
+      // Position is now all USDC, loses BTC upside
+      const priceChange = (currentPrice - initialPrice) / initialPrice;
+      return -priceChange * 50; // Lost BTC gains
+    }
+  }
+}
+
+/**
+ * Estimate liquidity distribution for fee allocation calculations
+ * This is a simplified model that can be enhanced with real tick data
+ */
+export function estimateLiquidityDistribution(
+  currentTick: number,
+  allPositions: Position[],
+): Map<number, number> {
+  const liquidityMap = new Map<number, number>();
+
+  // If we have position data, use it
+  if (allPositions && allPositions.length > 0) {
+    allPositions.forEach((position) => {
+      const tickLower = parseInt(position.tickLower);
+      const tickUpper = parseInt(position.tickUpper);
+      const liquidity = parseFloat(position.liquidity);
+
+      // Distribute liquidity across the position's range
+      for (let tick = tickLower; tick <= tickUpper; tick += 60) {
+        // 60 = tick spacing
+        const current = liquidityMap.get(tick) || 0;
+        liquidityMap.set(tick, current + liquidity);
+      }
+    });
+  } else {
+    // Fallback: assume normal distribution around current tick
+    const standardDeviation = 2000; // ticks
+    for (let i = -10000; i <= 10000; i += 60) {
+      const tick = currentTick + i;
+      const distance = Math.abs(i);
+      const liquidity = Math.exp(
+        -(distance * distance) / (2 * standardDeviation * standardDeviation),
+      );
+      liquidityMap.set(tick, liquidity);
+    }
+  }
+
+  return liquidityMap;
+}
+
+/**
+ * Convert tick to price using Uniswap V3 formula
+ */
+export function tickToPrice(tick: number): number {
+  return Math.pow(1.0001, tick);
+}
+
+/**
+ * Convert price to tick using Uniswap V3 formula
+ */
+export function priceToTick(price: number): number {
+  return Math.log(price) / Math.log(1.0001);
+}
+
+/**
+ * Calculate the percentage of total pool liquidity that a position range contains
+ * This is used for more accurate fee allocation
+ */
+export function calculateRangeLiquidityShare(
+  positionRange: PositionRange,
+  liquidityDistribution: Map<number, number>,
+): number {
+  let rangeLiquidity = 0;
+  let totalLiquidity = 0;
+
+  for (const [tick, liquidity] of liquidityDistribution) {
+    totalLiquidity += liquidity;
+
+    if (tick >= positionRange.tickLower && tick <= positionRange.tickUpper) {
+      rangeLiquidity += liquidity;
+    }
+  }
+
+  return totalLiquidity > 0 ? rangeLiquidity / totalLiquidity : 0;
 }
