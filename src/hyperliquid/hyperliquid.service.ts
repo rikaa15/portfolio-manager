@@ -198,7 +198,7 @@ export class HyperliquidService {
       const userFills = await this.infoClient.userFills({ user: this.walletAddress });
       let realizedPnl = 0;
       for (const fill of userFills) {
-        realizedPnl += parseFloat(fill.closedPnl);
+        realizedPnl += parseFloat(fill.closedPnl) - parseFloat(fill.fee);
       }
       return realizedPnl;
     } catch (error) {

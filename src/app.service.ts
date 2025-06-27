@@ -56,7 +56,7 @@ export class AppService {
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = 0;
-  private initialHedgePnL = 0; // Hyperliquid unrealized PnL in USD
+  private initialHedgePnL = 0; // Hyperliquid realized PnL in USD
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
@@ -198,10 +198,9 @@ export class AppService {
       console.log('currentHedgePnL', currentHedgePnL)
       console.log('unrealizedHedgePnL', unrealizedHedgePnL)
       const hedgePnL = (currentHedgePnL - this.initialHedgePnL) + unrealizedHedgePnL;
-      const totalPositionValue = positionValue + hedgePnL;
 
       const lpAPR = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
-      const totalPositionAPR = timeElapsed > 0 ? (totalFeesValue / totalPositionValue) * (365 / timeElapsed) * 100 : 0;
+      const totalPositionAPR = timeElapsed > 0 ? ((totalFeesValue + hedgePnL) / positionValue) * (365 / timeElapsed) * 100 : 0;
       
       // Calculate net APR including impermanent loss
       const netApr = totalPositionAPR - Math.abs(impermanentLoss);
