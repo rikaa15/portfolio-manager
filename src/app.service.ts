@@ -56,7 +56,7 @@ export class AppService {
   private monitoringInterval: NodeJS.Timeout;
   private lastHedgeValue = 0;
   private lastHedgeRebalance = 0;
-  private initialRealizedHedgePnL = 0; // Hyperliquid unrealized PnL in USD
+  private initialHedgePnL = 0; // Hyperliquid unrealized PnL in USD
   private currentHedgeLeverage = 1;
 
   // LP Rebalancing state
@@ -78,9 +78,9 @@ export class AppService {
     this.logger.log('Starting BTC/USDC LP strategy...');
 
     try {
-      this.logger.log('Getting realized PnL...');
-      this.initialRealizedHedgePnL = await this.hyperliquidService.getRealizedPnL();
-      this.logger.log(`Initial realized PnL: $${this.initialRealizedHedgePnL.toFixed(2)}`);
+      this.logger.log('Getting realized hedge PnL...');
+      this.initialHedgePnL = await this.hyperliquidService.getRealizedPnL();
+      this.logger.log(`Initial realized hedge PnL: $${this.initialHedgePnL.toFixed(2)}`);
     } catch (error) {
       this.logger.error(`Failed to get realized PnL: ${error.message}`);
       throw error;
@@ -193,8 +193,11 @@ export class AppService {
 
       // Calculate APR: ((fees + hedge PnL) / position value) * (365 / days elapsed)
       const unrealizedHedgePnL = await this.hyperliquidService.getUnrealizedPnL('BTC');
-      const currentRealizedPnL = await this.hyperliquidService.getRealizedPnL();
-      const hedgePnL = (currentRealizedPnL - this.initialRealizedHedgePnL) + unrealizedHedgePnL;
+      const currentHedgePnL = await this.hyperliquidService.getRealizedPnL();
+      console.log('this.initialHedgePnL', this.initialHedgePnL)
+      console.log('currentHedgePnL', currentHedgePnL)
+      console.log('unrealizedHedgePnL', unrealizedHedgePnL)
+      const hedgePnL = (currentHedgePnL - this.initialHedgePnL) + unrealizedHedgePnL;
       const totalPositionValue = positionValue + hedgePnL;
 
       const lpAPR = timeElapsed > 0 ? (totalFeesValue / positionValue) * (365 / timeElapsed) * 100 : 0;
@@ -328,7 +331,7 @@ export class AppService {
         - Net BTC delta: $${netBtcDeltaValue.toFixed(2)} (${netBtcDelta.toFixed(4)} BTC)
         Performance Metrics:
         - LP Fees: $${totalFeesValue.toFixed(2)}
-        - Hedge PnL: $${hedgePnL.toFixed(2)}
+        - Hedge PnL: $${hedgePnL.toFixed(2)} (initial=$${this.initialHedgePnL.toFixed(2)}, current=$${currentHedgePnL.toFixed(2)}, unrealized=$${unrealizedHedgePnL.toFixed(2)})
         - LP APR: ${lpAPR.toFixed(2)}%
         - Total Position APR (LP + Hedge): ${totalPositionAPR.toFixed(2)}%
         - Net APR (including IL): ${netApr.toFixed(2)}%
