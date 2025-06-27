@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppService } from './app.service';
 import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
+import { AerodromeLpService } from './aerodrome/aerodrome.service';
 import { HyperliquidService } from './hyperliquid/hyperliquid.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Logger } from '@nestjs/common';
@@ -384,6 +385,15 @@ describe('AppService', () => {
             getPoolPrice: jest.fn().mockResolvedValue(mockPoolPrice),
             collectFees: jest.fn().mockResolvedValue(undefined),
             getSignerAddress: jest.fn().mockResolvedValue('0x1234...'),
+          }
+        },
+        {
+          provide: AerodromeLpService,
+          useValue: {
+            getPosition: jest.fn().mockResolvedValue(null),
+            getPositionsByOwner: jest.fn().mockResolvedValue([]),
+            getSignerAddress: jest.fn().mockResolvedValue('0x1234...'),
+            bootstrap: jest.fn().mockResolvedValue(undefined),
           }
         },
         {
