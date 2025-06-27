@@ -8,6 +8,15 @@ import {
 } from './subgraph.client';
 import { Position, PositionRange, PositionType } from './types';
 
+export const logger = {
+  log: (message: string) => {
+    process.stdout.write(message + '\n');
+  },
+  error: (message: string) => {
+    process.stderr.write(message + '\n');
+  },
+};
+
 /**
  * Get pool exchange rate (what Uniswap UI shows as "pool price")
  * Returns the current exchange rate between the two tokens
@@ -337,7 +346,7 @@ export function isPositionActive(
 //     return 1.0; // Baseline
 //   }
 
-//   // CHANGE: Use range width approach for concentration calculation
+//   // Use range width approach for concentration calculation
 //   const fullRangeWidth = 100; // 100% price range
 
 //   const rangeWidths: Record<string, number> = {

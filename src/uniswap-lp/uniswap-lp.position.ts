@@ -1,20 +1,37 @@
 import { PoolDayData, PositionRange, PositionType } from './types';
 
 /**
- * Represents a Uniswap V3 concentrated liquidity position during backtesting
- * Now uses actual liquidity units and tick math instead of hardcoded values
+ * Represents a Uniswap V3 concentrated liquidity position with rebalancing support
  */
 export class UniswapPosition {
   private initialAmount: number;
+  private currentPositionCapital: number;
   private positionType: PositionType;
   private positionRange: PositionRange;
   private lpSharePercentage: number;
   private tickSpacing: number;
 
-  // Tracking state
   private cumulativeFees: number = 0;
   private daysInRange: number = 0;
   private totalDays: number = 0;
+
+  private rebalanceCount: number = 0;
+  private totalGasCosts: number = 0;
+  private lastRebalanceDay: number = 0;
+
+  private currentPositionDays: number = 0;
+  private currentPositionFees: number = 0;
+  private positionResults: Array<{
+    duration: number;
+    fees: number;
+    gasCost: number;
+    apr: number;
+    startingCapital: number;
+  }> = [];
+
+  // Current prices for rebalancing calculation
+  private currentToken0Price: number;
+  private currentToken1Price: number;
 
   // Initial prices for IL calculation
   private initialToken0Price: number;
@@ -30,10 +47,13 @@ export class UniswapPosition {
     tickSpacing: number = 60, // Default for 0.3% pools
   ) {
     this.initialAmount = initialAmount;
+    this.currentPositionCapital = initialAmount;
     this.positionType = positionType;
     this.lpSharePercentage = initialAmount / initialTvl;
     this.initialToken0Price = initialToken0Price;
     this.initialToken1Price = initialToken1Price;
+    this.currentToken0Price = initialToken0Price;
+    this.currentToken1Price = initialToken1Price;
     this.tickSpacing = tickSpacing;
 
     // Set up position range using tick spacing
@@ -46,14 +66,24 @@ export class UniswapPosition {
 
   /**
    * Process daily position update
-   * Now uses liquidity-based concentration calculations
    */
-  updateDaily(dayData: PoolDayData): void {
+  updateDaily(
+    dayData: PoolDayData,
+    wasOutOfRangeAtStart: boolean = false,
+  ): void {
     this.totalDays++;
+    this.currentPositionDays++;
 
-    // Check if position is in range for fee calculation
     const currentTick = parseInt(dayData.tick);
-    const isInRange = this.isPositionActive(currentTick);
+    // se aligned tick for all position-related calculations
+    const alignedTick =
+      Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
+
+    const isInRange = !wasOutOfRangeAtStart;
+
+    // Update current prices
+    this.currentToken0Price = parseFloat(dayData.token0Price);
+    this.currentToken1Price = parseFloat(dayData.token1Price);
 
     if (isInRange) {
       this.daysInRange++;
@@ -64,11 +94,73 @@ export class UniswapPosition {
       const totalDailyFees = parseFloat(dayData.feesUSD);
       const baseFeeShare = totalDailyFees * this.lpSharePercentage;
       const concentrationMultiplier =
-        this.getConcentrationMultiplier(currentTick);
+        this.getConcentrationMultiplier(alignedTick);
       dailyFees = baseFeeShare * concentrationMultiplier;
     }
-    // No fees earned when out of range
+
     this.cumulativeFees += dailyFees;
+    this.currentPositionFees += dailyFees;
+  }
+
+  /**
+   * Rebalance position
+   * Simulates: remove liquidity -> collect fees -> swap to 50/50 -> create new position
+   */
+  rebalance(
+    currentTick: number,
+    currentTvl: number,
+    gasCost: number = 16,
+  ): void {
+    if (this.currentPositionDays > 0) {
+      const positionAPR =
+        this.currentPositionDays > 0
+          ? (this.currentPositionFees / this.currentPositionCapital) *
+            (365 / this.currentPositionDays) *
+            100
+          : 0;
+
+      this.positionResults.push({
+        duration: this.currentPositionDays,
+        fees: this.currentPositionFees,
+        gasCost: gasCost,
+        apr: positionAPR,
+        startingCapital: this.currentPositionCapital,
+      });
+
+      this.currentPositionCapital += this.currentPositionFees;
+    }
+
+    // Update position range to current price
+    this.positionRange = this.getPositionTickRange(
+      currentTick,
+      this.positionType,
+      this.tickSpacing,
+    );
+
+    // Reset price references for new position (for IL calculation)
+    this.initialToken0Price = this.currentToken0Price;
+    this.initialToken1Price = this.currentToken1Price;
+
+    // Update LP share based on current TVL (assuming same USD value)
+    this.lpSharePercentage =
+      this.getCurrentPositionValue(currentTvl) / currentTvl;
+
+    // Add gas costs
+    this.totalGasCosts += gasCost;
+
+    // Track rebalancing
+    this.rebalanceCount++;
+    this.lastRebalanceDay = this.totalDays;
+
+    this.currentPositionDays = 0;
+    this.currentPositionFees = 0;
+  }
+
+  /**
+   * Check if position is currently out of range
+   */
+  isOutOfRange(currentTick: number): boolean {
+    return !this.isPositionActive(currentTick);
   }
 
   /**
@@ -85,29 +177,65 @@ export class UniswapPosition {
     currentToken0Price: number,
     currentToken1Price: number,
   ): number {
-    // Price ratio: relative change between token0 and token1 prices
+    // Use initial prices from when position was created/last rebalanced
     const priceRatio =
       currentToken0Price /
       this.initialToken0Price /
       (currentToken1Price / this.initialToken1Price);
 
-    // Square root from constant product formula (x * y = k) used in AMMs
     const sqrtPriceRatio = Math.sqrt(priceRatio);
-
-    // LP value formula: accounts for automatic rebalancing in AMM pools
     const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
-
-    // Holding value normalized to 1 (100% baseline)
     const holdValue = 1;
 
-    // Impermanent loss: LP performance vs holding 50/50 portfolio
-    return (lpValue - holdValue) * 100; // Convert to percentage
+    return (lpValue - holdValue) * 100;
   }
 
   /**
-   * Calculate running APR based on fees earned
+   * Calculate running APR based on weighted average of all positions
    */
   getRunningAPR(): number {
+    if (this.totalDays === 0) return 0;
+
+    // Net fees after gas costs
+    const netFees = this.cumulativeFees - this.totalGasCosts;
+
+    // Overall APR for the entire backtesting period
+    return (netFees / this.initialAmount) * (365 / this.totalDays) * 100;
+  }
+
+  /**
+   * Get current position APR (since last rebalance)
+   */
+  getCurrentPositionAPR(): number {
+    if (this.currentPositionDays === 0) return 0;
+    return (
+      (this.currentPositionFees / this.currentPositionCapital) *
+      (365 / this.currentPositionDays) *
+      100
+    );
+  }
+
+  /**
+   * Get weighted average APR of all completed positions
+   */
+  getWeightedPositionAPR(): number {
+    if (this.positionResults.length === 0) return 0;
+
+    let totalWeightedAPR = 0;
+    let totalDays = 0;
+
+    for (const position of this.positionResults) {
+      totalWeightedAPR += position.apr * position.duration;
+      totalDays += position.duration;
+    }
+
+    return totalDays > 0 ? totalWeightedAPR / totalDays : 0;
+  }
+
+  /**
+   * Get gross APR (before gas costs)
+   */
+  getGrossAPR(): number {
     if (this.totalDays === 0) return 0;
     return (
       (this.cumulativeFees / this.initialAmount) * (365 / this.totalDays) * 100
@@ -126,10 +254,13 @@ export class UniswapPosition {
    * Check if current tick is within position range
    */
   private isPositionActive(currentTick: number): boolean {
-    return (
-      currentTick >= this.positionRange.tickLower &&
-      currentTick <= this.positionRange.tickUpper
-    );
+    // Use aligned tick for position activity check
+    const alignedTick =
+      Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
+    const inRange =
+      alignedTick >= this.positionRange.tickLower &&
+      alignedTick <= this.positionRange.tickUpper;
+    return inRange;
   }
 
   /**
@@ -142,28 +273,28 @@ export class UniswapPosition {
   ): PositionRange {
     if (positionType === 'full-range') {
       return {
-        tickLower: -887272, // Uniswap V3 minimum tick
-        tickUpper: 887272, // Uniswap V3 maximum tick
+        tickLower: -887272,
+        tickUpper: 887272,
         priceLower: 0,
         priceUpper: Infinity,
         rangeWidth: Infinity,
       };
     }
 
-    // Parse percentage and convert to ticks using tick spacing
-    const rangePercent = parseInt(positionType.replace('%', '')) / 100;
-    const halfRange = rangePercent / 2; // ±5% for "10%" range
+    // First align the current tick to tick spacing
+    const alignedCurrentTick =
+      Math.floor(currentTick / tickSpacing) * tickSpacing;
 
-    // Convert price range to tick range using Uniswap V3 formula
+    const rangePercent = parseInt(positionType.replace('%', '')) / 100;
+    const halfRange = rangePercent / 2;
     const tickRange = Math.log(1 + halfRange) / Math.log(1.0001);
 
-    // Round to nearest valid tick (must be divisible by tickSpacing)
+    // Use aligned tick for calculations
     const tickLower =
-      Math.floor((currentTick - tickRange) / tickSpacing) * tickSpacing;
+      Math.floor((alignedCurrentTick - tickRange) / tickSpacing) * tickSpacing;
     const tickUpper =
-      Math.ceil((currentTick + tickRange) / tickSpacing) * tickSpacing;
+      Math.ceil((alignedCurrentTick + tickRange) / tickSpacing) * tickSpacing;
 
-    // Convert back to prices for reference
     const priceLower = Math.pow(1.0001, tickLower);
     const priceUpper = Math.pow(1.0001, tickUpper);
 
@@ -180,55 +311,102 @@ export class UniswapPosition {
    * Calculate concentration multiplier using actual tick math
    */
   private getConcentrationMultiplier(currentTick: number): number {
-    // Check if position is in range
-    const isInRange = this.isPositionActive(currentTick);
+    const alignedTick =
+      Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
+    const isInRange = this.isPositionActive(alignedTick);
     if (!isInRange) {
-      return 0; // No fees when out of range
+      return 0;
     }
 
     if (this.positionType === 'full-range') {
-      return 1.0; // Baseline
+      return 1.0;
     }
 
-    // Calculate range width in ticks
     const rangeWidth =
       this.positionRange.tickUpper - this.positionRange.tickLower;
-    const maxRange = 887272 * 2; // Full Uniswap V3 range
+    const maxRange = 887272 * 2;
 
-    // Narrower range = higher concentration of fees
-    // This formula approximates how liquidity density affects fee distribution
     const concentrationFactor = Math.sqrt(maxRange / rangeWidth);
-
-    // Cap at reasonable maximum to prevent unrealistic values
-    return Math.min(concentrationFactor, 100);
+    const cappedFactor = Math.min(concentrationFactor, 100);
+    return cappedFactor;
   }
 
-  /**
-   * Static method to determine tick spacing from fee tier
-   * Supports different pool types
-   */
+  // Getters for metrics
+  get totalFeesEarned(): number {
+    return this.cumulativeFees;
+  }
+
+  get netFeesEarned(): number {
+    return this.cumulativeFees - this.totalGasCosts;
+  }
+
+  get gasCostsTotal(): number {
+    return this.totalGasCosts;
+  }
+
+  get rebalanceCountTotal(): number {
+    return this.rebalanceCount;
+  }
+
+  get daysActive(): number {
+    return this.totalDays;
+  }
+
+  get totalDaysInRange(): number {
+    return this.daysInRange;
+  }
+
+  get currentPositionDaysActive(): number {
+    return this.currentPositionDays;
+  }
+
+  get currentPositionFeesEarned(): number {
+    return this.currentPositionFees;
+  }
+
+  get completedPositions(): Array<{
+    duration: number;
+    fees: number;
+    gasCost: number;
+    apr: number;
+    startingCapital: number;
+  }> {
+    return [...this.positionResults];
+  }
+
+  get positionInfo(): {
+    type: PositionType;
+    range: PositionRange;
+    tickSpacing: number;
+    sharePercentage: number;
+  } {
+    return {
+      type: this.positionType,
+      range: this.positionRange,
+      tickSpacing: this.tickSpacing,
+      sharePercentage: this.lpSharePercentage,
+    };
+  }
+
+  get initialInvestment(): number {
+    return this.initialAmount;
+  }
+
   static getTickSpacingFromFeeTier(feeTier: number): number {
     const feeToTickSpacing: Record<number, number> = {
-      100: 1, // 0.01% pools
-      500: 10, // 0.05% pools
-      3000: 60, // 0.3% pools (most common)
-      10000: 200, // 1% pools
+      100: 1,
+      500: 10,
+      3000: 60,
+      10000: 200,
     };
-
-    return feeToTickSpacing[feeTier] || 60; // Default to 0.3% pool spacing
+    return feeToTickSpacing[feeTier] || 60;
   }
 
-  /**
-   * Converts "0.3%" to 3000 basis points
-   */
   static getFeeTierFromPercentage(feePercentage: string): number {
     const percent = parseFloat(feePercentage.replace('%', ''));
-    return Math.round(percent * 10000); // Convert to basis points
+    return Math.round(percent * 10000);
   }
 
-  /**
-   * Factory method to create position with automatic tick spacing detection
-   */
   static create(
     initialAmount: number,
     positionType: PositionType,
@@ -250,36 +428,5 @@ export class UniswapPosition {
       initialToken1Price,
       tickSpacing,
     );
-  }
-
-  // Getters for metrics
-  get totalFeesEarned(): number {
-    return this.cumulativeFees;
-  }
-
-  get daysActive(): number {
-    return this.totalDays;
-  }
-
-  get totalDaysInRange(): number {
-    return this.daysInRange;
-  }
-
-  get positionInfo(): {
-    type: PositionType;
-    range: PositionRange;
-    tickSpacing: number;
-    sharePercentage: number;
-  } {
-    return {
-      type: this.positionType,
-      range: this.positionRange,
-      tickSpacing: this.tickSpacing,
-      sharePercentage: this.lpSharePercentage,
-    };
-  }
-
-  get initialInvestment(): number {
-    return this.initialAmount;
   }
 }
