@@ -180,12 +180,28 @@ export class AppService {
       const netBtcDeltaValue = netBtcDelta * currentPrice;
       
       // Calculate LP APR
-      const earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
-      const btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // btc
-      const usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // usdc
-      const btcFeesValue = Number(ethers.formatUnits(btcFees, position.token0.decimals)) * currentPrice;
-      const usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
-      const totalFeesValue = btcFeesValue + usdcFeesValue;
+      let earnedFees, btcFees, usdcFees, btcFeesValue, usdcFeesValue, totalFeesValue;
+      
+      if (lpProvider === 'aerodrome') {
+        // For Aerodrome, we don't have the same fee tracking mechanism as Uniswap
+        // For now, set fees to 0 - this can be enhanced later with Aerodrome-specific fee tracking
+        earnedFees = { token0Fees: '0', token1Fees: '0' };
+        btcFees = ethers.parseUnits('0', position.token0.decimals);  // token0 is always BTC
+        usdcFees = ethers.parseUnits('0', position.token1.decimals); // token1 is always USDC
+        btcFeesValue = 0;
+        usdcFeesValue = 0;
+        totalFeesValue = 0;
+        
+        this.logger.log('Aerodrome fee tracking not yet implemented, using 0 for fee calculations');
+      } else {
+        // Use existing Uniswap fee logic (Uniswap already returns BTC as token0, USDC as token1)
+        earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
+        btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // token0 = BTC
+        usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // token1 = USDC
+        btcFeesValue = Number(ethers.formatUnits(btcFees, position.token0.decimals)) * currentPrice;
+        usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
+        totalFeesValue = btcFeesValue + usdcFeesValue;
+      }
       
       // Calculate time elapsed since position start
       const positionStartTime = new Date(positionStartDate).getTime();
@@ -247,16 +263,16 @@ export class AppService {
           // Increase hedge to reduce BTC exposure
           const adjustmentFactor = Math.min(ratioDeviation * 2, 0.5); // Cap at 50% increase
           targetHedgeSize = wbtcAmount * (1 + adjustmentFactor);
-          this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% > 50% target, increasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
+          this.logger.log(`${position.token0.symbol} ratio ${(wbtcRatio * 100).toFixed(1)}% > 50% target, increasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
         } else {
           // WBTC ratio < 50% (too much USDC exposure)
           // Decrease hedge to increase BTC exposure
           const adjustmentFactor = Math.min(Math.abs(ratioDeviation) * 2, 0.5); // Cap at 50% decrease
           targetHedgeSize = wbtcAmount * (1 - adjustmentFactor);
-          this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% < 50% target, decreasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
+          this.logger.log(`${position.token0.symbol} ratio ${(wbtcRatio * 100).toFixed(1)}% < 50% target, decreasing hedge by ${(adjustmentFactor * 100).toFixed(1)}%`);
         }
       } else {
-        this.logger.log(`WBTC ratio ${(wbtcRatio * 100).toFixed(1)}% within 5% of 50% target, no hedge adjustment needed`);
+        this.logger.log(`${position.token0.symbol} ratio ${(wbtcRatio * 100).toFixed(1)}% within 5% of 50% target, no hedge adjustment needed`);
       }
       
       // Apply hedge size limits to prevent over-hedging
@@ -314,12 +330,12 @@ export class AppService {
 
       // Log position metrics
       this.logger.log(`Position Metrics:
-        WBTC Amount: ${wbtcAmount}, fees: ${ethers.formatUnits(btcFees, position.token0.decimals)}
-        USDC Amount: ${usdcAmount}, fees: ${ethers.formatUnits(usdcFees, position.token1.decimals)}
+        ${position.token0.symbol} Amount: ${wbtcAmount}, fees: ${ethers.formatUnits(btcFees, position.token0.decimals)}
+        ${position.token1.symbol} Amount: ${usdcAmount}, fees: ${ethers.formatUnits(usdcFees, position.token1.decimals)}
         Position Value: $${positionValue.toFixed(2)}
         Price Range: $${lowerPrice.toFixed(2)} - $${upperPrice.toFixed(2)}
-        Initial WBTC Price: $${initialPrice}
-        Current WBTC Price: $${currentPrice}
+        Initial ${position.token0.symbol} Price: $${initialPrice}
+        Current ${position.token0.symbol} Price: $${currentPrice}
         Impermanent Loss: ${impermanentLoss}%
         Target Hedge Size: ${targetHedgeSize.toFixed(4)} BTC ($${targetHedgeValue.toFixed(2)})
         Current Hedge Leverage: ${this.currentHedgeLeverage.toFixed(1)}x
@@ -349,7 +365,7 @@ export class AppService {
 
       // Log hedge adjustment reasoning
       this.logger.log(`Hedge Adjustment Analysis:
-        Current WBTC Ratio: ${(wbtcRatio * 100).toFixed(1)}%
+        Current ${position.token0.symbol} Ratio: ${(wbtcRatio * 100).toFixed(1)}%
         Target Ratio: 50%
         Deviation: ${(ratioDeviation * 100).toFixed(1)}%
         Current Hedge Size: ${Math.abs(hedgeBtcDelta).toFixed(4)} BTC
@@ -434,7 +450,9 @@ export class AppService {
       }
 
       try {
-        if(totalFeesValue > 0) {
+        if(totalFeesValue > 0 && lpProvider !== 'aerodrome') {
+          // Only collect fees for Uniswap provider
+          // Aerodrome fee collection will be implemented separately if needed
           await this.collectFees(totalFeesValue);
         }
       } catch (error) {
@@ -484,6 +502,7 @@ export class AppService {
 
   /**
    * Get LP position data from either Uniswap or Aerodrome
+   * Always returns BTC as token0, USDC as token1 for consistency
    */
   private async getLpPosition() {
     const lpProvider = this.configService.get('lpProvider');
@@ -497,26 +516,41 @@ export class AppService {
         throw new Error(`No Aerodrome position found in pool ${poolAddress}`);
       }
       
-      // Convert Aerodrome position to common format
-      // Parse the formatted balance strings back to raw values for calculations
-      const token0Amount = parseFloat(position.token0Balance);
-      const token1Amount = parseFloat(position.token1Balance);
-      const token0BalanceRaw = ethers.parseUnits(token0Amount.toString(), 8).toString();
-      const token1BalanceRaw = ethers.parseUnits(token1Amount.toString(), 6).toString();
+      // Normalize Aerodrome position: always return BTC as token0, USDC as token1
+      let btcBalance, usdcBalance, btcSymbol, usdcSymbol;
+      let btcBalanceRaw, usdcBalanceRaw;
+      
+      if (position.token0Symbol.toLowerCase().includes('btc')) {
+        // token0 is BTC, token1 is USDC - use as-is
+        btcBalance = position.token0Balance;
+        usdcBalance = position.token1Balance;
+        btcSymbol = position.token0Symbol;
+        usdcSymbol = position.token1Symbol;
+        btcBalanceRaw = ethers.parseUnits(position.token0Balance, 8).toString();
+        usdcBalanceRaw = ethers.parseUnits(position.token1Balance, 6).toString();
+      } else {
+        // token0 is USDC, token1 is BTC - swap to normalize
+        btcBalance = position.token1Balance;
+        usdcBalance = position.token0Balance;
+        btcSymbol = position.token1Symbol;
+        usdcSymbol = position.token0Symbol;
+        btcBalanceRaw = ethers.parseUnits(position.token1Balance, 8).toString();
+        usdcBalanceRaw = ethers.parseUnits(position.token0Balance, 6).toString();
+      }
       
       return {
-        token0BalanceRaw: token0BalanceRaw,
-        token1BalanceRaw: token1BalanceRaw,
-        token0Balance: `${position.token0Balance} ${position.token0Symbol}`,
-        token1Balance: `${position.token1Balance} ${position.token1Symbol}`,
-        token0: { decimals: 8, symbol: position.token0Symbol },
-        token1: { decimals: 6, symbol: position.token1Symbol },
+        token0BalanceRaw: btcBalanceRaw,   // Always BTC
+        token1BalanceRaw: usdcBalanceRaw,  // Always USDC
+        token0Balance: `${btcBalance} ${btcSymbol}`,
+        token1Balance: `${usdcBalance} ${usdcSymbol}`,
+        token0: { decimals: 8, symbol: btcSymbol },
+        token1: { decimals: 6, symbol: usdcSymbol },
         liquidity: position.liquidityAmount,
         isStaked: position.isStaked,
         pendingRewards: position.pendingAeroRewards
       };
     } else {
-      // Use existing Uniswap logic
+      // Use existing Uniswap logic (already returns BTC as token0, USDC as token1)
       return await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
     }
   }
