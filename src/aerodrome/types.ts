@@ -25,6 +25,8 @@ export interface AerodromeLiquidityPosition {
   liquidityAmount: string;
   isStaked: boolean;
   pendingAeroRewards?: string;
+  token0Fees?: string;
+  token1Fees?: string;
 }
 
 export interface ContractPoolInfo {
@@ -97,4 +99,15 @@ export interface TickData {
   feeGrowthOutside0X128: string;
   feeGrowthOutside1X128: string;
   feesUSD: string;
+}
+
+export interface SubgraphPositionFees {
+  collectedFeesToken0: string;
+  collectedFeesToken1: string;
+  uncollectedFeesToken0?: string;
+  uncollectedFeesToken1?: string;
+  token0Symbol: string;
+  token1Symbol: string;
+  token0Decimals: string;
+  token1Decimals: string;
 }

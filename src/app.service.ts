@@ -7,6 +7,7 @@ import { Config } from './config/configuration';
 import { ethers } from 'ethers';
 import { FundingService } from './funding/funding.service';
 import * as moment from 'moment';
+import { getTokenPrice } from './aerodrome/coingecko.client';
 
 @Injectable()
 export class AppService {
@@ -181,26 +182,40 @@ export class AppService {
       
       // Calculate LP APR
       let earnedFees, btcFees, usdcFees, btcFeesValue, usdcFeesValue, totalFeesValue;
+      let aeroRewardsValue = 0;
+      let tradingFeesValue = 0;
       
       if (lpProvider === 'aerodrome') {
-        // For Aerodrome, we don't have the same fee tracking mechanism as Uniswap
-        // For now, set fees to 0 - this can be enhanced later with Aerodrome-specific fee tracking
-        earnedFees = { token0Fees: '0', token1Fees: '0' };
-        btcFees = ethers.parseUnits('0', position.token0.decimals);  // token0 is always BTC
-        usdcFees = ethers.parseUnits('0', position.token1.decimals); // token1 is always USDC
-        btcFeesValue = 0;
-        usdcFeesValue = 0;
-        totalFeesValue = 0;
+        const aerodromePosition = position as any;
+        const token0FeesStr = aerodromePosition.token0Fees || '0';
+        const token1FeesStr = aerodromePosition.token1Fees || '0';
+        const pendingAeroRewards = aerodromePosition.pendingRewards || '0';
         
-        this.logger.log('Aerodrome fee tracking not yet implemented, using 0 for fee calculations');
+        btcFees = ethers.parseUnits(token0FeesStr, position.token0.decimals); // token0 = BTC
+        usdcFees = ethers.parseUnits(token1FeesStr, position.token1.decimals); // token1 = USDC
+        btcFeesValue = Number(ethers.formatUnits(btcFees, position.token0.decimals)) * currentPrice;
+        usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
+        tradingFeesValue = btcFeesValue + usdcFeesValue;
+        
+        try {
+          const aeroPrice = await getTokenPrice('aero');
+          const aeroAmount = parseFloat(pendingAeroRewards);
+          aeroRewardsValue = aeroAmount * aeroPrice;
+        } catch (error) {
+          this.logger.warn(`Failed to fetch AERO price: ${error.message}, using fallback price`);
+          const aeroAmount = parseFloat(pendingAeroRewards);
+          aeroRewardsValue = aeroAmount * 0.7799;
+        }
+      
+        totalFeesValue = tradingFeesValue + aeroRewardsValue;
       } else {
-        // Use existing Uniswap fee logic (Uniswap already returns BTC as token0, USDC as token1)
         earnedFees = await this.uniswapLpService.getEarnedFees(Number(this.WBTC_USDC_POSITION_ID));  
         btcFees = ethers.parseUnits(earnedFees.token0Fees, position.token0.decimals); // token0 = BTC
         usdcFees = ethers.parseUnits(earnedFees.token1Fees, position.token1.decimals); // token1 = USDC
         btcFeesValue = Number(ethers.formatUnits(btcFees, position.token0.decimals)) * currentPrice;
         usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
-        totalFeesValue = btcFeesValue + usdcFeesValue;
+        tradingFeesValue = btcFeesValue + usdcFeesValue;
+        totalFeesValue = tradingFeesValue;
       }
       
       // Calculate time elapsed since position start
@@ -345,7 +360,7 @@ export class AppService {
         - Hedge BTC size: ${hedgeBtcDelta.toFixed(4)} BTC
         - Net BTC delta: $${netBtcDeltaValue.toFixed(2)} (${netBtcDelta.toFixed(4)} BTC)
         Performance Metrics:
-        - LP Fees: $${totalFeesValue.toFixed(2)}
+        - LP Fees: $${totalFeesValue.toFixed(4)}${lpProvider === 'aerodrome' ? ` (${position.token0.symbol}: $${btcFeesValue.toFixed(4)} + ${position.token1.symbol}: $${usdcFeesValue.toFixed(4)} + AERO: $${aeroRewardsValue.toFixed(4)})` : ''}
         - Hedge PnL: $${hedgePnL.toFixed(2)} (initial=$${this.initialHedgePnL.toFixed(2)}, current=$${currentHedgePnL.toFixed(2)}, unrealized=$${unrealizedHedgePnL.toFixed(2)})
         - LP APR: ${lpAPR.toFixed(2)}%
         - Total Position APR (LP + Hedge): ${totalPositionAPR.toFixed(2)}%
@@ -430,7 +445,7 @@ export class AppService {
             return;
           }
         } else {
-          this.logger.warn(`Skipping hedge adjustment - margin usage too high: ${(marginUsage * 100).toFixed(2)}%`);
+          this.logger.warn(`Skipping hedge adjustment - margin usage too high: ${(marginUsage * 100).toFixed(4)}%`);
         }
       } else {
         this.logger.log('No hedge adjustment needed');
@@ -450,10 +465,9 @@ export class AppService {
       }
 
       try {
-        if(totalFeesValue > 0 && lpProvider !== 'aerodrome') {
+        if(tradingFeesValue > 0 && lpProvider !== 'aerodrome') {
           // Only collect fees for Uniswap provider
-          // Aerodrome fee collection will be implemented separately if needed
-          await this.collectFees(totalFeesValue);
+          await this.collectFees(tradingFeesValue);
         }
       } catch (error) {
         this.logger.error(`Error collecting fees: ${error.message}`);
@@ -519,6 +533,7 @@ export class AppService {
       // Normalize Aerodrome position: always return BTC as token0, USDC as token1
       let btcBalance, usdcBalance, btcSymbol, usdcSymbol;
       let btcBalanceRaw, usdcBalanceRaw;
+      let token0Fees, token1Fees;
       
       if (position.token0Symbol.toLowerCase().includes('btc')) {
         // token0 is BTC, token1 is USDC - use as-is
@@ -528,6 +543,8 @@ export class AppService {
         usdcSymbol = position.token1Symbol;
         btcBalanceRaw = ethers.parseUnits(position.token0Balance, 8).toString();
         usdcBalanceRaw = ethers.parseUnits(position.token1Balance, 6).toString();
+        token0Fees = position.token0Fees; // BTC fees
+        token1Fees = position.token1Fees; // USDC fees
       } else {
         // token0 is USDC, token1 is BTC - swap to normalize
         btcBalance = position.token1Balance;
@@ -536,6 +553,8 @@ export class AppService {
         usdcSymbol = position.token0Symbol;
         btcBalanceRaw = ethers.parseUnits(position.token1Balance, 8).toString();
         usdcBalanceRaw = ethers.parseUnits(position.token0Balance, 6).toString();
+        token0Fees = position.token1Fees; // BTC fees (originally token1)
+        token1Fees = position.token0Fees; // USDC fees (originally token0)
       }
       
       return {
@@ -547,7 +566,9 @@ export class AppService {
         token1: { decimals: 6, symbol: usdcSymbol },
         liquidity: position.liquidityAmount,
         isStaked: position.isStaked,
-        pendingRewards: position.pendingAeroRewards
+        pendingRewards: position.pendingAeroRewards,
+        token0Fees, // BTC fees
+        token1Fees, // USDC fees
       };
     } else {
       // Use existing Uniswap logic (already returns BTC as token0, USDC as token1)
