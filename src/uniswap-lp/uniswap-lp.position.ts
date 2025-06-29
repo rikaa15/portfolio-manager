@@ -25,7 +25,6 @@ export class UniswapPosition {
     duration: number;
     fees: number;
     gasCost: number;
-    apr: number;
     startingCapital: number;
   }> = [];
 
@@ -74,11 +73,6 @@ export class UniswapPosition {
     this.totalDays++;
     this.currentPositionDays++;
 
-    const currentTick = parseInt(dayData.tick);
-    // se aligned tick for all position-related calculations
-    const alignedTick =
-      Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
-
     const isInRange = !wasOutOfRangeAtStart;
 
     // Update current prices
@@ -89,12 +83,21 @@ export class UniswapPosition {
       this.daysInRange++;
     }
 
+    // const currentTick = parseInt(dayData.tick);
+    // se aligned tick for all position-related calculations
+    // const alignedTick =
+    //   Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
+
     let dailyFees = 0;
     if (isInRange) {
       const totalDailyFees = parseFloat(dayData.feesUSD);
       const baseFeeShare = totalDailyFees * this.lpSharePercentage;
-      const concentrationMultiplier =
-        this.getConcentrationMultiplier(alignedTick);
+      // const concentrationMultiplier =
+      //   this.getConcentrationMultiplier(alignedTick);
+      let concentrationMultiplier = 1;
+      if (this.positionType === '10%') concentrationMultiplier = 30.5;
+      else if (this.positionType === '20%') concentrationMultiplier = 22;
+      else if (this.positionType === '30%') concentrationMultiplier = 18;
       dailyFees = baseFeeShare * concentrationMultiplier;
     }
 
@@ -112,18 +115,10 @@ export class UniswapPosition {
     gasCost: number = 16,
   ): void {
     if (this.currentPositionDays > 0) {
-      const positionAPR =
-        this.currentPositionDays > 0
-          ? (this.currentPositionFees / this.currentPositionCapital) *
-            (365 / this.currentPositionDays) *
-            100
-          : 0;
-
       this.positionResults.push({
         duration: this.currentPositionDays,
         fees: this.currentPositionFees,
         gasCost: gasCost,
-        apr: positionAPR,
         startingCapital: this.currentPositionCapital,
       });
 
@@ -141,9 +136,8 @@ export class UniswapPosition {
     this.initialToken0Price = this.currentToken0Price;
     this.initialToken1Price = this.currentToken1Price;
 
-    // Update LP share based on current TVL (assuming same USD value)
-    this.lpSharePercentage =
-      this.getCurrentPositionValue(currentTvl) / currentTvl;
+    // update the LP Share %
+    this.lpSharePercentage = this.currentPositionCapital / currentTvl;
 
     // Add gas costs
     this.totalGasCosts += gasCost;
@@ -215,9 +209,6 @@ export class UniswapPosition {
     );
   }
 
-  /**
-   * Get weighted average APR of all completed positions
-   */
   getWeightedPositionAPR(): number {
     if (this.positionResults.length === 0) return 0;
 
@@ -225,7 +216,10 @@ export class UniswapPosition {
     let totalDays = 0;
 
     for (const position of this.positionResults) {
-      totalWeightedAPR += position.apr * position.duration;
+      const netFees = position.fees - position.gasCost;
+      const netAPR =
+        (netFees / position.startingCapital) * (365 / position.duration) * 100;
+      totalWeightedAPR += netAPR * position.duration;
       totalDays += position.duration;
     }
 
@@ -368,7 +362,6 @@ export class UniswapPosition {
     duration: number;
     fees: number;
     gasCost: number;
-    apr: number;
     startingCapital: number;
   }> {
     return [...this.positionResults];
