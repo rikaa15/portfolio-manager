@@ -215,10 +215,6 @@ export class AerodromeLpService {
     tokenId: string
   ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
     try {
-      // First, try the SIMPLE Uniswap approach
-      this.logger.log('Aerodrome fee calculation: Trying simple Uniswap collect.staticCall() approach');
-      
-      // Get the position manager contract (where your NFT lives)
       const positionManagerContract = new ethers.Contract(
         this.config.contracts.positionManager, 
         [
@@ -227,26 +223,16 @@ export class AerodromeLpService {
         provider
       );
       
-      this.logger.log(`Checking fees for tokenId: ${tokenId}`);
-      
-      // Use the same approach as original Uniswap code
       const MAX_UINT_128 = BigInt('0xffffffffffffffffffffffffffffffff');
       const collectParams = {
         tokenId: tokenId,
-        recipient: ethers.ZeroAddress,  // Zero address for staticCall (don't actually collect)
-        amount0Max: MAX_UINT_128,       // Max possible amount
-        amount1Max: MAX_UINT_128        // Max possible amount
+        recipient: ethers.ZeroAddress,
+        amount0Max: MAX_UINT_128,
+        amount1Max: MAX_UINT_128
       };
       
-      this.logger.log('Simulating fee collection with collect.staticCall()...');
-      
-      // Static call to see how much fees we would get without actually collecting
       const result = await positionManagerContract.collect.staticCall(collectParams);
       
-      this.logger.log(`collect.staticCall() result: amount0=${result.amount0}, amount1=${result.amount1}`);
-      this.logger.log(`Fees available: ${ethers.formatUnits(result.amount0, parseInt(poolInfo.token0.decimals))} ${poolInfo.token0.symbol}, ${ethers.formatUnits(result.amount1, parseInt(poolInfo.token1.decimals))} ${poolInfo.token1.symbol}`);
-      
-      // If collect.staticCall() returned non-zero fees, use them
       if (result.amount0 > 0n || result.amount1 > 0n) {
         return {
           accruedFees0: result.amount0,
@@ -254,13 +240,11 @@ export class AerodromeLpService {
         };
       }
       
-      // If collect.staticCall() returned 0, try alternative approach using gauge fees
       this.logger.log('collect.staticCall() returned 0, trying gauge-based fee calculation...');
       return await this.calculateFeesFromGauge(poolInfo, position, userAddress, tokenId, provider);
       
     } catch (error: any) {
       this.logger.error(`Error with collect.staticCall() approach: ${error.message}`);
-      this.logger.log('Falling back to gauge-based fee calculation');
       return await this.calculateFeesFromGauge(poolInfo, position, userAddress, tokenId, provider);
     }
   }
@@ -276,16 +260,6 @@ export class AerodromeLpService {
     provider: JsonRpcProvider
   ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
     try {
-      this.logger.log('Calculating fees from subgraph...');
-      
-      // For now, let's examine what we have available in the position data
-      this.logger.log('Position data available:');
-      this.logger.log(`  tokensOwed0: ${position.tokensOwed0?.toString() || 'undefined'}`);
-      this.logger.log(`  tokensOwed1: ${position.tokensOwed1?.toString() || 'undefined'}`);
-      this.logger.log(`  feeGrowthInside0LastX128: ${position.feeGrowthInside0LastX128?.toString() || 'undefined'}`);
-      this.logger.log(`  feeGrowthInside1LastX128: ${position.feeGrowthInside1LastX128?.toString() || 'undefined'}`);
-      
-      // Try the direct contract approach as GPT suggested
       const contractFees = await this.calculateFeesFromContract(
         poolInfo, 
         position, 
@@ -294,32 +268,21 @@ export class AerodromeLpService {
       );
       
       if (contractFees.accruedFees0 > 0n || contractFees.accruedFees1 > 0n) {
-        this.logger.log('✅ Direct contract calculation succeeded!');
         return contractFees;
       }
       
-      // Try to fetch fees from the subgraph
       const subgraphFees = await fetchPositionFees(tokenId);
       
       if (subgraphFees) {
-        this.logger.log('Subgraph fee data found:');
-        this.logger.log(`  Collected fees: ${subgraphFees.collectedFeesToken0} ${subgraphFees.token0Symbol}, ${subgraphFees.collectedFeesToken1} ${subgraphFees.token1Symbol}`);
-        this.logger.log(`  Uncollected fees: ${subgraphFees.uncollectedFeesToken0 || '0'} ${subgraphFees.token0Symbol}, ${subgraphFees.uncollectedFeesToken1 || '0'} ${subgraphFees.token1Symbol}`);
-        
         try {
-          // Parse the subgraph fees with error handling for precision issues
           const collectedFees0 = this.safeParseUnits(subgraphFees.collectedFeesToken0, parseInt(subgraphFees.token0Decimals));
           const collectedFees1 = this.safeParseUnits(subgraphFees.collectedFeesToken1, parseInt(subgraphFees.token1Decimals));
           const uncollectedFees0 = this.safeParseUnits(subgraphFees.uncollectedFeesToken0 || '0', parseInt(subgraphFees.token0Decimals));
           const uncollectedFees1 = this.safeParseUnits(subgraphFees.uncollectedFeesToken1 || '0', parseInt(subgraphFees.token1Decimals));
-          
-          // Total fees = collected + uncollected
+
           const totalFees0 = collectedFees0 + uncollectedFees0;
           const totalFees1 = collectedFees1 + uncollectedFees1;
           
-          this.logger.log(`Total subgraph fees: ${ethers.formatUnits(totalFees0, parseInt(subgraphFees.token0Decimals))} ${subgraphFees.token0Symbol}, ${ethers.formatUnits(totalFees1, parseInt(subgraphFees.token1Decimals))} ${subgraphFees.token1Symbol}`);
-          
-          // If subgraph returned meaningful fees, use them
           if (totalFees0 > 0n || totalFees1 > 0n) {
             return {
               accruedFees0: totalFees0,
@@ -328,18 +291,13 @@ export class AerodromeLpService {
           }
         } catch (parseError: any) {
           this.logger.error(`Error parsing subgraph fee values: ${parseError.message}`);
-          this.logger.log(`Raw values: token0=${subgraphFees.collectedFeesToken0}+${subgraphFees.uncollectedFeesToken0}, token1=${subgraphFees.collectedFeesToken1}+${subgraphFees.uncollectedFeesToken1}`);
-          // Continue to fallback
         }
       } else {
         this.logger.log('No subgraph fee data found for this position');
       }
       
-      // Fallback to position's tokensOwed values
       const tokensOwed0 = position.tokensOwed0 || 0n;
       const tokensOwed1 = position.tokensOwed1 || 0n;
-      
-      this.logger.log(`Fallback: Using position's tokensOwed values: ${ethers.formatUnits(tokensOwed0, parseInt(poolInfo.token0.decimals))} ${poolInfo.token0.symbol}, ${ethers.formatUnits(tokensOwed1, parseInt(poolInfo.token1.decimals))} ${poolInfo.token1.symbol}`);
       
       return {
         accruedFees0: tokensOwed0,
@@ -349,7 +307,6 @@ export class AerodromeLpService {
     } catch (error: any) {
       this.logger.error(`Error calculating fees from subgraph: ${error.message}`);
       
-      // Final fallback to position's tokensOwed
       const tokensOwed0 = position.tokensOwed0 || 0n;
       const tokensOwed1 = position.tokensOwed1 || 0n;
       
@@ -361,7 +318,7 @@ export class AerodromeLpService {
   }
 
   /**
-   * Calculate fees using direct contract calls as GPT suggested
+   * Calculate fees using direct contract calls
    * Uses snapshotCumulativesInside() to get current fee growth
    */
   private async calculateFeesFromContract(
@@ -371,113 +328,72 @@ export class AerodromeLpService {
     provider: JsonRpcProvider
   ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
     try {
-      this.logger.log('🚀 Trying direct contract fee calculation (GPT method)...');
-      
-      // Get the pool contract
       const poolContract = new ethers.Contract(
-        poolInfo.id, // pool address
+        poolInfo.id,
         [
           'function snapshotCumulativesInside(int24 tickLower, int24 tickUpper) external view returns (int56, uint160, uint32, uint256, uint256)',
           'function positions(bytes32 key) external view returns (uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)'
         ],
         provider
       );
-      
-      // Fix tick parsing - ensure we get integers
+
       const tickLowerStr = position.tickLower?.tickIdx?.toString() || '0';
       const tickUpperStr = position.tickUpper?.tickIdx?.toString() || '0';
       const tickLower = parseInt(tickLowerStr);
       const tickUpper = parseInt(tickUpperStr);
       const liquidity = BigInt(position.liquidity);
       
-      this.logger.log(`📊 Position details:`);
-      this.logger.log(`  Tick range: ${tickLower} to ${tickUpper}`);
-      this.logger.log(`  Liquidity: ${liquidity.toString()}`);
-      
-      // Validate tick values
       if (isNaN(tickLower) || isNaN(tickUpper)) {
-        this.logger.log(`❌ Invalid tick values: ${tickLowerStr} -> ${tickLower}, ${tickUpperStr} -> ${tickUpper}`);
         return { accruedFees0: 0n, accruedFees1: 0n };
       }
       
-      // Get current fee growth inside the position's range
-      this.logger.log(`📞 Calling snapshotCumulativesInside(${tickLower}, ${tickUpper})...`);
       const snapshot = await poolContract.snapshotCumulativesInside(tickLower, tickUpper);
+
+      const currentFeeGrowthInside0 = snapshot[3];
+      const currentFeeGrowthInside1 = snapshot[4];
       
-      // snapshot returns: [tickCumulativeInside, secondsPerLiquidityInsideX128, secondsInside, feeGrowthInside0X128, feeGrowthInside1X128]
-      const currentFeeGrowthInside0 = snapshot[3]; // feeGrowthInside0X128
-      const currentFeeGrowthInside1 = snapshot[4]; // feeGrowthInside1X128
-      
-      this.logger.log(`📈 Current fee growth inside:`);
-      this.logger.log(`  Token0: ${currentFeeGrowthInside0.toString()}`);
-      this.logger.log(`  Token1: ${currentFeeGrowthInside1.toString()}`);
-      
-      // Get position's last recorded fee growth
-      // Try to get this from the position data we already have
       const lastFeeGrowthInside0 = BigInt(position.feeGrowthInside0LastX128 || '0');
       const lastFeeGrowthInside1 = BigInt(position.feeGrowthInside1LastX128 || '0');
       
-      this.logger.log(`📜 Last recorded fee growth:`);
-      this.logger.log(`  Token0: ${lastFeeGrowthInside0.toString()}`);
-      this.logger.log(`  Token1: ${lastFeeGrowthInside1.toString()}`);
-      
-      // Check for sentinel values (uninitialized position)
       const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
       const SENTINEL_THRESHOLD = MAX_UINT256 - BigInt('1000000000000000000000000000000000000000');
       
       if (lastFeeGrowthInside0 > SENTINEL_THRESHOLD || lastFeeGrowthInside1 > SENTINEL_THRESHOLD) {
-        this.logger.log(`🚨 Detected sentinel values in position data - position may not be properly initialized for fee tracking`);
-        // For uninitialized positions, we can't calculate fees this way
         return { accruedFees0: 0n, accruedFees1: 0n };
       }
       
-      // Calculate fee deltas
       const feeGrowthDelta0 = currentFeeGrowthInside0 - lastFeeGrowthInside0;
       const feeGrowthDelta1 = currentFeeGrowthInside1 - lastFeeGrowthInside1;
-      
-      this.logger.log(`📊 Fee growth deltas:`);
-      this.logger.log(`  Token0: ${feeGrowthDelta0.toString()}`);
-      this.logger.log(`  Token1: ${feeGrowthDelta1.toString()}`);
-      
-      // Calculate fees: (delta * liquidity) / 2^128
-      const Q128 = BigInt('0x100000000000000000000000000000000'); // 2^128
+
+      const Q128 = BigInt('0x100000000000000000000000000000000');
       const fees0 = (feeGrowthDelta0 * liquidity) / Q128;
       const fees1 = (feeGrowthDelta1 * liquidity) / Q128;
-      
-      this.logger.log(`💰 Calculated fees:`);
-      this.logger.log(`  Token0: ${fees0.toString()} (${ethers.formatUnits(fees0, parseInt(poolInfo.token0.decimals))} ${poolInfo.token0.symbol})`);
-      this.logger.log(`  Token1: ${fees1.toString()} (${ethers.formatUnits(fees1, parseInt(poolInfo.token1.decimals))} ${poolInfo.token1.symbol})`);
-      
+
       return {
         accruedFees0: fees0 > 0n ? fees0 : 0n,
         accruedFees1: fees1 > 0n ? fees1 : 0n
       };
       
     } catch (error: any) {
-      this.logger.error(`❌ Direct contract fee calculation failed: ${error.message}`);
+      this.logger.warn('Direct contract fee calculation failed');
       return { accruedFees0: 0n, accruedFees1: 0n };
     }
   }
 
   private safeParseUnits(value: string, decimals: number): bigint {
     try {
-      // Handle empty or zero values
       if (!value || value === '0' || value === '') {
         return 0n;
       }
       
-      // Truncate excessive decimal places that might cause parsing errors
       const parts = value.split('.');
       if (parts.length === 2 && parts[1].length > decimals) {
-        // Truncate to token decimals to avoid precision errors
         const truncatedValue = parts[0] + '.' + parts[1].substring(0, decimals);
-        this.logger.log(`Truncated ${value} to ${truncatedValue} for ${decimals} decimals`);
         return ethers.parseUnits(truncatedValue, decimals);
       }
       
       return ethers.parseUnits(value, decimals);
     } catch (error: any) {
-      this.logger.error(`Failed to parse units for value "${value}" with ${decimals} decimals: ${error.message}`);
       return 0n;
     }
   }
