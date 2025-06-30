@@ -47,7 +47,6 @@ async function runBacktest(
       startDate,
       endDate,
     );
-
     if (poolDayData.length === 0) {
       logger.log('No data found for the specified period');
       return;
@@ -70,6 +69,7 @@ async function runBacktest(
       initialToken0Price,
       initialToken1Price,
       feePercentage,
+      1,
     );
 
     const positionInfo = position.positionInfo;
@@ -93,7 +93,6 @@ async function runBacktest(
         position.positionInfo.tickSpacing;
       const currentTVL = parseFloat(dayData.tvlUSD);
 
-      const wasOutOfRangeAtStart = position.isOutOfRange(alignedTick);
       const isInRangeBeforeRebalance = !position.isOutOfRange(alignedTick);
 
       // Check if rebalancing is needed (strategy logic in backtesting script)
@@ -112,7 +111,7 @@ async function runBacktest(
       }
 
       // Update position state for this day
-      position.updateDaily(dayData, wasOutOfRangeAtStart);
+      position.updateDaily(dayData, shouldRebalance);
       // Calculate current position value and IL
       const currentPositionValue = position.getCurrentPositionValue(currentTVL);
 
@@ -124,8 +123,13 @@ async function runBacktest(
       );
 
       // Calculate total PnL (net of gas costs)
-      const positionPnL = currentPositionValue - initialAmount;
-      const totalPnL = positionPnL + position.netFeesEarned;
+      const totalPnL =
+        currentPositionValue -
+        initialAmount +
+        position.currentPositionFeesEarned;
+
+      // const positionPnL = currentPositionValue - initialAmount;
+      // const totalPnL = positionPnL + position.netFeesEarned;
 
       const runningAPR = position.getRunningAPR();
       const weightedPositionAPR =
@@ -155,7 +159,7 @@ async function runBacktest(
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
           `Net APR: ${runningAPR.toFixed(1)}% | ` +
-          `Pos APR: ${weightedPositionAPR.toFixed(1)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
+          `Pos APR: ${weightedPositionAPR.toFixed(1)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo} |`,
       );
     });
 
@@ -197,13 +201,6 @@ async function runBacktest(
       const rangeWidth =
         positionInfo.range.tickUpper - positionInfo.range.tickLower;
       logger.log(`Current Range Width: ${rangeWidth} ticks`);
-
-      // Calculate average concentration during in-range periods
-      const avgConcentration =
-        rangeWidth > 0 ? Math.sqrt((887272 * 2) / rangeWidth) : 0;
-      logger.log(
-        `Average Concentration Factor: ${avgConcentration.toFixed(1)}x`,
-      );
     }
   } catch (error: any) {
     if (error.message) {
@@ -218,7 +215,7 @@ describe('Uniswap LP Backtesting with Rebalancing', () => {
   it('should backtest WBTC/USDC LP performance for 10% range position with rebalancing', async () => {
     await runBacktest(
       POOL_ADDRESS,
-      '2024-05-29',
+      '2024-04-29',
       '2025-05-29',
       INITIAL_INVESTMENT,
       '10%',

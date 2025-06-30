@@ -1,7 +1,7 @@
 import { PoolDayData, PositionRange, PositionType } from './types';
 
 /**
- * Represents a Uniswap V3 concentrated liquidity position with rebalancing support
+ * Represents a Uniswap V3 concentrated liquidity position with dynamic competition modeling
  */
 export class UniswapPosition {
   private initialAmount: number;
@@ -19,6 +19,7 @@ export class UniswapPosition {
   private totalGasCosts: number = 0;
   private lastRebalanceDay: number = 0;
 
+  private competitionPenaltyFactor: number;
   private currentPositionDays: number = 0;
   private currentPositionFees: number = 0;
   private positionResults: Array<{
@@ -36,6 +37,12 @@ export class UniswapPosition {
   private initialToken0Price: number;
   private initialToken1Price: number;
 
+  private concentrationMultiplier: number;
+
+  private initialInRangeTvl: number;
+
+  private dailyTimeInRangeFactors: number[] = [];
+
   constructor(
     initialAmount: number,
     positionType: PositionType,
@@ -44,6 +51,7 @@ export class UniswapPosition {
     initialToken0Price: number,
     initialToken1Price: number,
     tickSpacing: number = 60, // Default for 0.3% pools
+    competitionPenaltyFactor: number = 0.2,
   ) {
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
@@ -55,25 +63,27 @@ export class UniswapPosition {
     this.currentToken1Price = initialToken1Price;
     this.tickSpacing = tickSpacing;
 
+    this.competitionPenaltyFactor = competitionPenaltyFactor;
     // Set up position range using tick spacing
     this.positionRange = this.getPositionTickRange(
       initialTick,
       positionType,
       tickSpacing,
     );
+    this.concentrationMultiplier = this.getConcentrationMultiplier(
+      this.positionType,
+    );
+    this.initialInRangeTvl = initialTvl;
   }
 
   /**
-   * Process daily position update
+   * Process daily position update with dynamic competition modeling
    */
-  updateDaily(
-    dayData: PoolDayData,
-    wasOutOfRangeAtStart: boolean = false,
-  ): void {
+  updateDaily(dayData: PoolDayData, wasRebalancedToday: boolean = false): void {
     this.totalDays++;
     this.currentPositionDays++;
 
-    const isInRange = !wasOutOfRangeAtStart;
+    const isInRange = !wasRebalancedToday;
 
     // Update current prices
     this.currentToken0Price = parseFloat(dayData.token0Price);
@@ -83,22 +93,19 @@ export class UniswapPosition {
       this.daysInRange++;
     }
 
-    // const currentTick = parseInt(dayData.tick);
-    // se aligned tick for all position-related calculations
-    // const alignedTick =
-    //   Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
+    const timeInRangeFactor = this.calculateTimeInRangeFactor(dayData);
+    this.dailyTimeInRangeFactors.push(timeInRangeFactor);
 
     let dailyFees = 0;
     if (isInRange) {
       const totalDailyFees = parseFloat(dayData.feesUSD);
       const baseFeeShare = totalDailyFees * this.lpSharePercentage;
-      // const concentrationMultiplier =
-      //   this.getConcentrationMultiplier(alignedTick);
-      let concentrationMultiplier = 1;
-      if (this.positionType === '10%') concentrationMultiplier = 30.5;
-      else if (this.positionType === '20%') concentrationMultiplier = 22;
-      else if (this.positionType === '30%') concentrationMultiplier = 18;
-      dailyFees = baseFeeShare * concentrationMultiplier;
+
+      dailyFees =
+        baseFeeShare *
+        this.concentrationMultiplier *
+        this.competitionPenaltyFactor *
+        timeInRangeFactor;
     }
 
     this.cumulativeFees += dailyFees;
@@ -122,7 +129,7 @@ export class UniswapPosition {
         startingCapital: this.currentPositionCapital,
       });
 
-      this.currentPositionCapital += this.currentPositionFees;
+      this.currentPositionCapital += this.currentPositionFees - gasCost;
     }
 
     // Update position range to current price
@@ -132,12 +139,19 @@ export class UniswapPosition {
       this.tickSpacing,
     );
 
+    this.concentrationMultiplier = this.getConcentrationMultiplier(
+      this.positionType,
+    );
+
     // Reset price references for new position (for IL calculation)
     this.initialToken0Price = this.currentToken0Price;
     this.initialToken1Price = this.currentToken1Price;
 
     // update the LP Share %
     this.lpSharePercentage = this.currentPositionCapital / currentTvl;
+
+    // Reset initial in-range TVL for new position
+    this.initialInRangeTvl = currentTvl;
 
     // Add gas costs
     this.totalGasCosts += gasCost;
@@ -182,6 +196,44 @@ export class UniswapPosition {
     const holdValue = 1;
 
     return (lpValue - holdValue) * 100;
+  }
+
+  /**
+   * Calculate time-in-range factor based on daily price action
+   * Determines what percentage of the day the position was earning fees
+   */
+  private calculateTimeInRangeFactor(dayData: PoolDayData): number {
+    // Default minimum factor if no high/low data available
+    if (dayData.low === undefined || dayData.high === undefined) {
+      return 0.05;
+    }
+    const priceLower = this.positionRange.priceLower;
+    const priceUpper = this.positionRange.priceUpper;
+    const low = 1 / parseFloat(dayData.low);
+    const high = 1 / parseFloat(dayData.high);
+
+    // Case 1: Entire daily range within position range (maximum fees)
+    if (low >= priceLower && high <= priceUpper) {
+      return 0.8;
+    }
+
+    // Case 2: Entire daily range outside position range (minimum fees)
+    if (high < priceLower || low > priceUpper) {
+      return 0.05;
+    }
+
+    // Case 3: Daily range partially overlaps position range (proportional fees)
+    const priceSpan = high - low;
+    const rangeSpan = Math.max(
+      0,
+      Math.min(priceUpper, high) - Math.max(priceLower, low),
+    );
+    const factor = Math.max(
+      0.05,
+      Math.min(0.8, priceSpan > 0 ? rangeSpan / priceSpan : 0.05),
+    );
+
+    return factor;
   }
 
   /**
@@ -289,8 +341,10 @@ export class UniswapPosition {
     const tickUpper =
       Math.ceil((alignedCurrentTick + tickRange) / tickSpacing) * tickSpacing;
 
-    const priceLower = Math.pow(1.0001, tickLower);
-    const priceUpper = Math.pow(1.0001, tickUpper);
+    // Calculate priceLower and priceUpper in BTC/USD (USDC per WBTC)
+    const centerPrice = this.currentToken1Price;
+    const priceLower = centerPrice * (1 - halfRange);
+    const priceUpper = centerPrice * (1 + halfRange);
 
     return {
       tickLower,
@@ -304,7 +358,7 @@ export class UniswapPosition {
   /**
    * Calculate concentration multiplier using actual tick math
    */
-  private getConcentrationMultiplier(currentTick: number): number {
+  private getConcentrationMultiplierOld(currentTick: number): number {
     const alignedTick =
       Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
     const isInRange = this.isPositionActive(alignedTick);
@@ -323,6 +377,59 @@ export class UniswapPosition {
     const concentrationFactor = Math.sqrt(maxRange / rangeWidth);
     const cappedFactor = Math.min(concentrationFactor, 100);
     return cappedFactor;
+  }
+
+  /**
+   * Concentration multipliers calibrated to produce realistic APRs
+   * based on observed Uniswap V3 LP performance in active markets
+   */
+  private getConcentrationMultiplier(positionType: PositionType): number {
+    const multipliers = {
+      'full-range': 0.2, // Calibrated: structural disadvantage vs concentrated positions
+      '30%': 5.0,
+      '20%': 6.0,
+      '10%': 8.0,
+    };
+    return multipliers[positionType] || 1.0;
+  }
+  static getTickSpacingFromFeeTier(feeTier: number): number {
+    const feeToTickSpacing: Record<number, number> = {
+      100: 1,
+      500: 10,
+      3000: 60,
+      10000: 200,
+    };
+    return feeToTickSpacing[feeTier] || 60;
+  }
+
+  static getFeeTierFromPercentage(feePercentage: string): number {
+    const percent = parseFloat(feePercentage.replace('%', ''));
+    return Math.round(percent * 10000);
+  }
+
+  static create(
+    initialAmount: number,
+    positionType: PositionType,
+    initialTick: number,
+    initialTvl: number,
+    initialToken0Price: number,
+    initialToken1Price: number,
+    feePercentage: string = '0.3%',
+    competitionPenaltyFactor: number = 0.2,
+  ): UniswapPosition {
+    const feeTier = this.getFeeTierFromPercentage(feePercentage);
+    const tickSpacing = this.getTickSpacingFromFeeTier(feeTier);
+
+    return new UniswapPosition(
+      initialAmount,
+      positionType,
+      initialTick,
+      initialTvl,
+      initialToken0Price,
+      initialToken1Price,
+      tickSpacing,
+      competitionPenaltyFactor,
+    );
   }
 
   // Getters for metrics
@@ -367,6 +474,12 @@ export class UniswapPosition {
     return [...this.positionResults];
   }
 
+  get averageTimeInRangeFactor(): number {
+    if (this.dailyTimeInRangeFactors.length === 0) return 0;
+    const sum = this.dailyTimeInRangeFactors.reduce((a, b) => a + b, 0);
+    return sum / this.dailyTimeInRangeFactors.length;
+  }
+
   get positionInfo(): {
     type: PositionType;
     range: PositionRange;
@@ -383,43 +496,5 @@ export class UniswapPosition {
 
   get initialInvestment(): number {
     return this.initialAmount;
-  }
-
-  static getTickSpacingFromFeeTier(feeTier: number): number {
-    const feeToTickSpacing: Record<number, number> = {
-      100: 1,
-      500: 10,
-      3000: 60,
-      10000: 200,
-    };
-    return feeToTickSpacing[feeTier] || 60;
-  }
-
-  static getFeeTierFromPercentage(feePercentage: string): number {
-    const percent = parseFloat(feePercentage.replace('%', ''));
-    return Math.round(percent * 10000);
-  }
-
-  static create(
-    initialAmount: number,
-    positionType: PositionType,
-    initialTick: number,
-    initialTvl: number,
-    initialToken0Price: number,
-    initialToken1Price: number,
-    feePercentage: string = '0.3%',
-  ): UniswapPosition {
-    const feeTier = this.getFeeTierFromPercentage(feePercentage);
-    const tickSpacing = this.getTickSpacingFromFeeTier(feeTier);
-
-    return new UniswapPosition(
-      initialAmount,
-      positionType,
-      initialTick,
-      initialTvl,
-      initialToken0Price,
-      initialToken1Price,
-      tickSpacing,
-    );
   }
 }
