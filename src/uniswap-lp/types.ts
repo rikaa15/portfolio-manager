@@ -119,6 +119,8 @@ export interface PoolDayData {
   token1Price: string;
   liquidity: string;
   tick: string;
+  high?: string;
+  low?: string;
 }
 
 export interface PoolDayPrice {
@@ -164,27 +166,3 @@ export interface PoolHourPrice {
   tvlUSD: string;
   volumeUSD: string;
 }
-
-/**
- * Pool information from subgraph
- */
-// export interface PoolInfo {
-//   id: string;
-//   createdAtTimestamp: string;
-//   token0: {
-//     symbol: string;
-//     decimals: string;
-//     id: string;
-//   };
-//   token1: {
-//     symbol: string;
-//     decimals: string;
-//     id: string;
-//   };
-//   feeTier: string;
-//   totalValueLockedUSD: string;
-//   liquidity: string;
-//   tick: string;
-//   token0Price: string;
-//   token1Price: string;
-// }
