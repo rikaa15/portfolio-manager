@@ -69,7 +69,6 @@ async function runBacktest(
       initialToken0Price,
       initialToken1Price,
       feePercentage,
-      1,
     );
 
     const positionInfo = position.positionInfo;

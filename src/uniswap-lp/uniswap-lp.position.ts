@@ -51,7 +51,6 @@ export class UniswapPosition {
     initialToken0Price: number,
     initialToken1Price: number,
     tickSpacing: number = 60, // Default for 0.3% pools
-    competitionPenaltyFactor: number = 0.2,
   ) {
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
@@ -63,7 +62,6 @@ export class UniswapPosition {
     this.currentToken1Price = initialToken1Price;
     this.tickSpacing = tickSpacing;
 
-    this.competitionPenaltyFactor = competitionPenaltyFactor;
     // Set up position range using tick spacing
     this.positionRange = this.getPositionTickRange(
       initialTick,
@@ -415,7 +413,6 @@ export class UniswapPosition {
     initialToken0Price: number,
     initialToken1Price: number,
     feePercentage: string = '0.3%',
-    competitionPenaltyFactor: number = 0.2,
   ): UniswapPosition {
     const feeTier = this.getFeeTierFromPercentage(feePercentage);
     const tickSpacing = this.getTickSpacingFromFeeTier(feeTier);
@@ -428,7 +425,6 @@ export class UniswapPosition {
       initialToken0Price,
       initialToken1Price,
       tickSpacing,
-      competitionPenaltyFactor,
     );
   }
 
