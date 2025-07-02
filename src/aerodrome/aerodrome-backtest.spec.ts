@@ -92,7 +92,8 @@ async function runAerodromeBacktest(
         position.positionInfo.tickSpacing;
       const currentTVL = parseFloat(dayData.tvlUSD);
 
-      const isInRangeBeforeRebalance = !position.isOutOfRange(alignedTick);
+      //const isInRangeBeforeRebalance = !position.isOutOfRange(alignedTick);
+      const isInRangeBeforeRebalance = position.getTimeInRange() > 0;
 
       // Check if rebalancing is needed (strategy logic in backtesting script)
       let shouldRebalance = false;
@@ -119,14 +120,11 @@ async function runAerodromeBacktest(
       // Update position state for this day
       position.updateDaily(dayData, shouldRebalance);
 
-      const currentPositionValue = position.getCurrentPositionValue(currentTVL);
+      const currentPositionValue = position.getCurrentPositionValue();
 
       const currentToken0Price = parseFloat(dayData.token0Price);
-      const currentToken1Price = parseFloat(dayData.token1Price);
-      const impermanentLoss = position.calculateImpermanentLoss(
-        currentToken0Price,
-        currentToken1Price,
-      );
+      const impermanentLoss =
+        position.calculateImpermanentLoss(currentToken0Price);
 
       // Calculate total PnL (net of gas costs)
       const totalPnL =
@@ -230,10 +228,10 @@ describe('Aerodrome LP Backtesting with Real Fee Growth', () => {
   it('should backtest cbBTC/USDC LP performance for 10% range position with real fee growth calculations', async () => {
     await runAerodromeBacktest(
       POOL_ADDRESS,
-      '2025-06-28',
+      '2025-06-01',
       '2025-06-30',
       INITIAL_INVESTMENT,
-      '10%',
+      '1%',
       2000, // Aerodrome cbBTC/USDC tick spacing
       false,
     );

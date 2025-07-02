@@ -43,8 +43,8 @@ export class AerodromePosition {
   private totalPoolLiquidity: number;
 
   // Token decimals for BTC/stablecoin
-  private readonly token0Decimals: number = 8; // BTC
-  private readonly token1Decimals: number = 6; // USDC
+  private readonly token0Decimals: number = 8; // cbBTC (match btcAmount)
+  private readonly token1Decimals: number = 6; // USDC (match stablecoinAmount)
 
   private dailyActiveFactors: number[] = [];
   private currentTick: number = 0;
@@ -70,26 +70,15 @@ export class AerodromePosition {
     this.currentBtcPrice = initialBtcPrice;
     this.tickSpacing = tickSpacing;
     this.currentTick = initialTick;
-
+    // this.lpSharePercentage = initialAmount / initialTvl;
     // Calculate position range
     this.positionRange = this.getPositionTickRange(
       initialTick,
       positionType,
       tickSpacing,
     );
-
     // Simple token allocation in USD terms
     this.calculateTokensAndLiquidity(initialAmount, initialBtcPrice);
-
-    logger.log(`[DEBUG] === SIMPLIFIED BTC/STABLECOIN SETUP ===`);
-    logger.log(`[DEBUG] Investment: $${initialAmount}`);
-    logger.log(`[DEBUG] BTC Price: $${initialBtcPrice.toLocaleString()}`);
-    logger.log(`[DEBUG] BTC Amount: ${this.btcAmount}`);
-    logger.log(`[DEBUG] Stablecoin Amount: ${this.stablecoinAmount}`);
-    logger.log(`[DEBUG] Liquidity: ${this.liquidityAmount.toLocaleString()}`);
-    logger.log(
-      `[DEBUG] LP Share: ${(this.lpSharePercentage * 100).toFixed(6)}%`,
-    );
   }
 
   // Position range calculation
@@ -116,10 +105,18 @@ export class AerodromePosition {
     const priceUpper = currentBtcPrice * (1 + rangePercent / 2);
 
     // Use simple tick calculation
-    const tickLower =
-      Math.floor(this.getTickFromPrice(priceLower) / tickSpacing) * tickSpacing;
-    const tickUpper =
-      Math.ceil(this.getTickFromPrice(priceUpper) / tickSpacing) * tickSpacing;
+    const rawTickLower = this.getTickFromPrice(priceLower);
+    const rawTickUpper = this.getTickFromPrice(priceUpper);
+
+    const tickLower = Math.min(
+      Math.floor(rawTickLower / tickSpacing) * tickSpacing,
+      Math.floor(rawTickUpper / tickSpacing) * tickSpacing,
+    );
+
+    const tickUpper = Math.max(
+      Math.ceil(rawTickLower / tickSpacing) * tickSpacing,
+      Math.ceil(rawTickUpper / tickSpacing) * tickSpacing,
+    );
 
     logger.log(`[DEBUG] Position range calculation:`);
     logger.log(`[DEBUG] - Position type: ${positionType}`);
@@ -270,21 +267,11 @@ export class AerodromePosition {
   /**
    * Position value calculation (always USD)
    */
-  getCurrentPositionValue(currentTvl: number): number {
+  getCurrentPositionValue(): number {
     // USD calculation
     const btcValueInUsd = this.btcAmount * this.currentBtcPrice;
     const stablecoinValueInUsd = this.stablecoinAmount;
     const totalValue = btcValueInUsd + stablecoinValueInUsd;
-
-    if (this.totalDays <= 3) {
-      logger.log(`[DEBUG] Day ${this.totalDays} Position Value (Simple USD):`);
-      logger.log(
-        `[DEBUG] - BTC: ${this.btcAmount.toFixed(8)} × $${this.currentBtcPrice.toLocaleString()} = $${btcValueInUsd.toFixed(2)}`,
-      );
-      logger.log(`[DEBUG] - Stablecoin: $${stablecoinValueInUsd.toFixed(2)}`);
-      logger.log(`[DEBUG] - Total: $${totalValue.toFixed(2)}`);
-    }
-
     return totalValue;
   }
 
@@ -295,7 +282,8 @@ export class AerodromePosition {
     this.totalDays++;
     this.currentPositionDays++;
 
-    const isInRange = !wasRebalancedToday;
+    const currentTick = parseInt(dayData.tick);
+    const isInRange = !this.isOutOfRange(currentTick) && !wasRebalancedToday;
 
     // Update current BTC price
     this.currentBtcPrice = parseFloat(dayData.token0Price);
@@ -398,34 +386,6 @@ export class AerodromePosition {
 
     this.previousFeeGrowth0X128 = currentFeeGrowth0;
     this.previousFeeGrowth1X128 = currentFeeGrowth1;
-
-    if (this.totalDays <= 3) {
-      logger.log(
-        `[DEBUG] Day ${this.totalDays} Fee calculation (Competition-adjusted):`,
-      );
-      logger.log(
-        `[DEBUG] - Fee growth: [${fg[0].toExponential(3)}, ${fg[1].toExponential(3)}]`,
-      );
-      logger.log(
-        `[DEBUG] - Your liquidity: ${this.liquidityAmount.toLocaleString()}`,
-      );
-      logger.log(`[DEBUG] - Active %: ${activeLiquidityPercent.toFixed(1)}%`);
-      logger.log(
-        `[DEBUG] - LP share: ${(this.lpSharePercentage * 100).toFixed(6)}%`,
-      );
-      logger.log(
-        `[DEBUG] - Base fees (no competition): [${baseFeeToken0.toExponential(3)}, ${baseFeeToken1.toExponential(3)}]`,
-      );
-      logger.log(
-        `[DEBUG] - Actual fees (with competition): [${feeToken0.toExponential(3)}, ${feeToken1.toExponential(3)}]`,
-      );
-      logger.log(
-        `[DEBUG] - BTC fees USD: $${(feeToken0 * this.currentBtcPrice).toFixed(6)}`,
-      );
-      logger.log(`[DEBUG] - Stablecoin fees USD: $${feeToken1.toFixed(6)}`);
-      logger.log(`[DEBUG] - Total USD fees: $${feesUSD.toFixed(6)}`);
-    }
-
     return feesUSD;
   }
 
@@ -465,17 +425,16 @@ export class AerodromePosition {
    * Tick-to-price conversion
    */
   private getTickFromPrice(price: number): number {
-    // For BTC/stablecoin: decimal0=8 (BTC), decimal1=6 (USDC)
+    // 1. Use inverted price (cbBTC per USDC instead of USDC per cbBTC)
+    // 2. Use correct decimal adjustment
+    const invertedPrice = 1 / price;
     const valToLog =
-      price * Math.pow(10, this.token0Decimals - this.token1Decimals); // price * 10^(8-6) = price * 100
+      invertedPrice * Math.pow(10, this.token0Decimals - this.token1Decimals);
     const tickIDXRaw = Math.log(valToLog) / Math.log(1.0001);
     return Math.round(tickIDXRaw);
   }
 
-  calculateImpermanentLoss(
-    currentBtcPrice: number,
-    currentToken1Price: number,
-  ): number {
+  calculateImpermanentLoss(currentBtcPrice: number): number {
     const priceRatio = currentBtcPrice / this.initialBtcPrice;
     const sqrtPriceRatio = Math.sqrt(priceRatio);
     const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
@@ -488,11 +447,9 @@ export class AerodromePosition {
   }
 
   private isPositionActive(currentTick: number): boolean {
-    const alignedTick =
-      Math.floor(currentTick / this.tickSpacing) * this.tickSpacing;
     return (
-      alignedTick >= this.positionRange.tickLower &&
-      alignedTick <= this.positionRange.tickUpper
+      currentTick >= this.positionRange.tickLower &&
+      currentTick <= this.positionRange.tickUpper
     );
   }
 
