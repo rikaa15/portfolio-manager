@@ -1,14 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ethers, JsonRpcProvider, Wallet } from 'ethers';
-import { BaseConfig, Config } from '../config/configuration';
-import configuration from '../config/configuration';
-import {
-  calculatePositionAmounts,
-  checkGaugeStaking,
-  getUserStakedPosition,
+import { Config, BaseConfig } from '../config/configuration';
+import { ethers, Wallet, JsonRpcProvider } from 'ethers';
+import { 
+  getUserPosition, 
+  calculatePositionAmounts, 
+  fetchPoolInfoDirect,
+  getTokenInfo,
+  getGaugeInfo,
 } from './contract.client';
-import { fetchPositionFees } from './subgraph.client';
 import { AerodromeLiquidityPosition } from './types';
 
 @Injectable()
@@ -74,7 +74,7 @@ export class AerodromeLpService {
         `Fetching Aerodrome LP position for user ${userAddress} in pool ${poolAddress}...`,
       );
 
-      const userPosition = await getUserStakedPosition(
+      const userPosition = await getUserPosition(
         userAddress,
         poolAddress,
         this.config.contracts.positionManager,
@@ -84,10 +84,16 @@ export class AerodromeLpService {
 
       if (!userPosition) {
         this.logger.log(
-          `No staked positions found for user ${userAddress} in pool ${poolAddress}`,
+          `No LP positions found for user ${userAddress} in pool ${poolAddress}`,
         );
         return null;
       }
+      
+      this.logger.log(`=== POSITION FOUND ===`);
+      this.logger.log(`Token ID: ${userPosition.tokenId}`);
+      this.logger.log(`Pool: ${poolAddress}`);
+      this.logger.log(`Token0: ${userPosition.poolInfo.token0.symbol} (${userPosition.poolInfo.token0.address})`);
+      this.logger.log(`Token1: ${userPosition.poolInfo.token1.symbol} (${userPosition.poolInfo.token1.address})`);
 
       const { token0Balance, token1Balance } = await calculatePositionAmounts(
         poolAddress,
@@ -96,9 +102,9 @@ export class AerodromeLpService {
         this.provider,
       );
 
-      const { isStaked, pendingRewards } = await checkGaugeStaking(
+      const { isStaked, pendingRewards } = await getGaugeInfo(
         userAddress,
-        userPosition.tokenId,
+        BigInt(userPosition.tokenId),
         userPosition.poolInfo.gauge.address,
         this.provider,
       );
@@ -203,8 +209,7 @@ export class AerodromeLpService {
   }
 
   /**
-   * Calculate accrued fees for a position using fee growth values
-   * Similar to Uniswap V3 fee calculation mechanism
+   * Calculate accrued fees for a position
    */
   private async calculateAccruedFees(
     poolAddress: string,
@@ -214,6 +219,7 @@ export class AerodromeLpService {
     userAddress: string,
     tokenId: string
   ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
+    // Try collect.staticCall() first
     try {
       const positionManagerContract = new ethers.Contract(
         this.config.contracts.positionManager, 
@@ -239,145 +245,15 @@ export class AerodromeLpService {
           accruedFees1: result.amount1
         };
       }
-      
-      this.logger.log('collect.staticCall() returned 0, trying gauge-based fee calculation...');
-      return await this.calculateFeesFromGauge(poolInfo, position, userAddress, tokenId, provider);
-      
     } catch (error: any) {
-      this.logger.error(`Error with collect.staticCall() approach: ${error.message}`);
-      return await this.calculateFeesFromGauge(poolInfo, position, userAddress, tokenId, provider);
+      this.logger.warn(`collect.staticCall() failed: ${error.message}`);
     }
-  }
 
-  /**
-   * Alternative fee calculation using subgraph data
-   */
-  private async calculateFeesFromGauge(
-    poolInfo: any,
-    position: any,
-    userAddress: string,
-    tokenId: string,
-    provider: JsonRpcProvider
-  ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
-    try {
-      const contractFees = await this.calculateFeesFromContract(
-        poolInfo, 
-        position, 
-        tokenId, 
-        provider
-      );
-      
-      if (contractFees.accruedFees0 > 0n || contractFees.accruedFees1 > 0n) {
-        return contractFees;
-      }
-      
-      const subgraphFees = await fetchPositionFees(tokenId);
-      
-      if (subgraphFees) {
-        try {
-          const collectedFees0 = this.safeParseUnits(subgraphFees.collectedFeesToken0, parseInt(subgraphFees.token0Decimals));
-          const collectedFees1 = this.safeParseUnits(subgraphFees.collectedFeesToken1, parseInt(subgraphFees.token1Decimals));
-          const uncollectedFees0 = this.safeParseUnits(subgraphFees.uncollectedFeesToken0 || '0', parseInt(subgraphFees.token0Decimals));
-          const uncollectedFees1 = this.safeParseUnits(subgraphFees.uncollectedFeesToken1 || '0', parseInt(subgraphFees.token1Decimals));
-
-          const totalFees0 = collectedFees0 + uncollectedFees0;
-          const totalFees1 = collectedFees1 + uncollectedFees1;
-          
-          if (totalFees0 > 0n || totalFees1 > 0n) {
-            return {
-              accruedFees0: totalFees0,
-              accruedFees1: totalFees1
-            };
-          }
-        } catch (parseError: any) {
-          this.logger.error(`Error parsing subgraph fee values: ${parseError.message}`);
-        }
-      } else {
-        this.logger.log('No subgraph fee data found for this position');
-      }
-      
-      const tokensOwed0 = position.tokensOwed0 || 0n;
-      const tokensOwed1 = position.tokensOwed1 || 0n;
-      
-      return {
-        accruedFees0: tokensOwed0,
-        accruedFees1: tokensOwed1
-      };
-
-    } catch (error: any) {
-      this.logger.error(`Error calculating fees from subgraph: ${error.message}`);
-      
-      const tokensOwed0 = position.tokensOwed0 || 0n;
-      const tokensOwed1 = position.tokensOwed1 || 0n;
-      
-      return {
-        accruedFees0: tokensOwed0,
-        accruedFees1: tokensOwed1
-      };
-    }
-  }
-
-  /**
-   * Calculate fees using direct contract calls
-   * Uses snapshotCumulativesInside() to get current fee growth
-   */
-  private async calculateFeesFromContract(
-    poolInfo: any,
-    position: any,
-    tokenId: string,
-    provider: JsonRpcProvider
-  ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
-    try {
-      const poolContract = new ethers.Contract(
-        poolInfo.id,
-        [
-          'function snapshotCumulativesInside(int24 tickLower, int24 tickUpper) external view returns (int56, uint160, uint32, uint256, uint256)',
-          'function positions(bytes32 key) external view returns (uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)'
-        ],
-        provider
-      );
-
-      const tickLowerStr = position.tickLower?.tickIdx?.toString() || '0';
-      const tickUpperStr = position.tickUpper?.tickIdx?.toString() || '0';
-      const tickLower = parseInt(tickLowerStr);
-      const tickUpper = parseInt(tickUpperStr);
-      const liquidity = BigInt(position.liquidity);
-      
-      if (isNaN(tickLower) || isNaN(tickUpper)) {
-        return { accruedFees0: 0n, accruedFees1: 0n };
-      }
-      
-      const snapshot = await poolContract.snapshotCumulativesInside(tickLower, tickUpper);
-
-      const currentFeeGrowthInside0 = snapshot[3];
-      const currentFeeGrowthInside1 = snapshot[4];
-      
-      const lastFeeGrowthInside0 = BigInt(position.feeGrowthInside0LastX128 || '0');
-      const lastFeeGrowthInside1 = BigInt(position.feeGrowthInside1LastX128 || '0');
-      
-      const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
-      const SENTINEL_THRESHOLD = MAX_UINT256 - BigInt('1000000000000000000000000000000000000000');
-      
-      if (lastFeeGrowthInside0 > SENTINEL_THRESHOLD || lastFeeGrowthInside1 > SENTINEL_THRESHOLD) {
-        return { accruedFees0: 0n, accruedFees1: 0n };
-      }
-      
-      const feeGrowthDelta0 = currentFeeGrowthInside0 - lastFeeGrowthInside0;
-      const feeGrowthDelta1 = currentFeeGrowthInside1 - lastFeeGrowthInside1;
-
-      const Q128 = BigInt('0x100000000000000000000000000000000');
-      const fees0 = (feeGrowthDelta0 * liquidity) / Q128;
-      const fees1 = (feeGrowthDelta1 * liquidity) / Q128;
-
-      return {
-        accruedFees0: fees0 > 0n ? fees0 : 0n,
-        accruedFees1: fees1 > 0n ? fees1 : 0n
-      };
-      
-    } catch (error: any) {
-      this.logger.warn('Direct contract fee calculation failed');
-      return { accruedFees0: 0n, accruedFees1: 0n };
-    }
+    // Fallback to tokensOwed from position data
+    return {
+      accruedFees0: position.tokensOwed0 || 0n,
+      accruedFees1: position.tokensOwed1 || 0n
+    };
   }
 
   private safeParseUnits(value: string, decimals: number): bigint {
@@ -398,60 +274,3 @@ export class AerodromeLpService {
     }
   }
 }
-// async function main() {
-//   try {
-//     console.log('Testing Aerodrome getPosition method...');
-
-//     const config = configuration();
-//     const configService = new ConfigService<Config>(config);
-
-//     // Create aerodrome service instance
-//     const aerodromeService = new AerodromeLpService(configService);
-//     await aerodromeService.bootstrap();
-
-//     const userAddress = process.env.WALLET_ADDRESS ?? '';
-//     const poolAddress = config.base.contracts.pools[0];
-
-//     console.log(`Testing with wallet: ${userAddress}`);
-//     console.log(`Testing with pool: ${poolAddress}`);
-
-//     // Test individual position
-//     const position = await aerodromeService.getPosition(
-//       userAddress,
-//       poolAddress,
-//     );
-
-//     if (position) {
-//       console.log('Single position found:');
-//       console.log(JSON.stringify(position, null, 2));
-//     } else {
-//       console.log('No position found for this wallet in the specified pool');
-//     }
-
-//     console.log('\n=== Testing getPositionsByOwner ===');
-//     const allPositions =
-//       await aerodromeService.getPositionsByOwner(userAddress);
-
-//     if (allPositions.length > 0) {
-//       console.log(`Found ${allPositions.length} total positions:`);
-//       allPositions.forEach((pos, index) => {
-//         console.log(`\nPosition ${index + 1}:`);
-//         console.log(`  Pool: ${pos.token0Symbol}/${pos.token1Symbol}`);
-//         console.log(
-//           `  Liquidity: ${pos.token0Balance} ${pos.token0Symbol} + ${pos.token1Balance} ${pos.token1Symbol}`,
-//         );
-//         console.log(`  Staked: ${pos.isStaked}`);
-//         console.log(`  Pending AERO: ${pos.pendingAeroRewards}`);
-//       });
-//     } else {
-//       console.log('No positions found for this wallet');
-//     }
-//   } catch (error: any) {
-//     console.error(`Test failed: ${error.message}`);
-//     throw error;
-//   }
-// }
-
-// if (require.main === module) {
-//   main().catch(console.error);
-// }
