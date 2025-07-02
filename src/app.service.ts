@@ -179,15 +179,22 @@ export class AppService {
         usdcFeesValue = Number(ethers.formatUnits(usdcFees, position.token1.decimals));
         tradingFeesValue = btcFeesValue + usdcFeesValue;
         
+        const aeroAmount = parseFloat(pendingAeroRewards);
+        let aeroPrice = 0;
+        
         try {
-          const aeroPrice = await getTokenPrice('aero');
-          const aeroAmount = parseFloat(pendingAeroRewards);
-          aeroRewardsValue = aeroAmount * aeroPrice;
+          aeroPrice = await getTokenPrice('aero', false);
         } catch (error) {
-          this.logger.warn(`Failed to fetch AERO price: ${error.message}, using fallback price`);
-          const aeroAmount = parseFloat(pendingAeroRewards);
-          aeroRewardsValue = aeroAmount * 0.7799;
+          this.logger.warn(`Failed to fetch live AERO price: ${error.message}, using fallback price`);
+          try {
+            aeroPrice = await getTokenPrice('aero', true);
+          } catch (fallbackError) {
+            this.logger.warn(`Failed to get AERO fallback price: ${fallbackError.message}, setting price to 0`);
+            aeroPrice = 0;
+          }
         }
+        
+        aeroRewardsValue = aeroAmount * aeroPrice;
       
         totalFeesValue = tradingFeesValue + aeroRewardsValue;
       } else {

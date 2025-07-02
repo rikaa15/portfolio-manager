@@ -87,9 +87,7 @@ async function runBacktest(
 
     // Get historical data
     logger.log('Fetching historical data...');
-    const startTimestamp = getUnixTimestamp(startDate);
-    const endTimestamp = getUnixTimestamp(endDate);
-    const poolDayData = await fetchPoolDayPrices(poolAddress, startTimestamp, endTimestamp);
+    const poolDayData = await fetchPoolDayPrices(poolAddress, startDate, endDate);
 
     if (poolDayData.length === 0) {
       logger.log('No data found for the specified period');
