@@ -1,8 +1,229 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { OptionsService } from './options.service';
-import { OptionBacktestParams } from './types';
+import { OptionBacktestParams, OptionBacktestResult } from './types';
 import { PoolDayData } from '../aerodrome/types';
 import { fetchPoolDayData } from '../aerodrome/subgraph.client';
+import { Logger } from '@nestjs/common';
+import { 
+  calculateHistoricalVolatility,
+  daysToYears
+} from './options.utils';
+
+/**
+ * Calculate real volatility from pool data
+ */
+function calculateRealVolatility(poolDayData: PoolDayData[], lookbackDays: number = 30, logger?: Logger): number {
+  const DEFAULT_VOLATILITY = 0.8;
+  
+  if (poolDayData.length < 2) {
+    if (logger) logger.warn('Insufficient price data for volatility calculation, using default');
+    return DEFAULT_VOLATILITY;
+  }
+  
+  const recentData = poolDayData.slice(-Math.min(lookbackDays, poolDayData.length));
+  const prices = recentData.map(data => parseFloat(data.token0Price));
+  
+  try {
+    const volatility = calculateHistoricalVolatility(prices, 'daily');
+    if (logger) logger.log(`Calculated ${lookbackDays}-day volatility: ${(volatility * 100).toFixed(1)}%`);
+    return volatility;
+  } catch (error) {
+    if (logger) logger.error(`Failed to calculate volatility: ${error.message}`);
+    return DEFAULT_VOLATILITY;
+  }
+}
+
+/**
+ * Run option backtest with real pool data
+ */
+function runOptionBacktestWithPoolData(
+  optionsService: OptionsService,
+  poolDayData: PoolDayData[],
+  params: OptionBacktestParams,
+  volatilityLookbackDays: number = 30,
+  logger?: Logger
+): OptionBacktestResult[] {
+  if (logger) {
+    logger.log(`Running option backtest for ${params.optionType} option with REAL pool data...`);
+    logger.log(`Strike: $${params.strikePrice}, Expiry: ${params.expiryDays} days`);
+    logger.log(`Pool data points: ${poolDayData.length}`);
+  }
+  
+  const results: OptionBacktestResult[] = [];
+  
+  if (poolDayData.length === 0) {
+    if (logger) logger.error('No pool data provided');
+    return results;
+  }
+  
+  const realVolatility = calculateRealVolatility(poolDayData, volatilityLookbackDays, logger);
+  const initialPrice = parseFloat(poolDayData[0].token0Price);
+  
+  const contract = optionsService.createOption({
+    type: params.optionType,
+    strikePrice: params.strikePrice,
+    expiryDays: params.expiryDays,
+    underlyingAsset: 'BTC',
+    contractSize: params.contractSize,
+    currentSpotPrice: initialPrice,
+    volatility: realVolatility,
+    riskFreeRate: params.riskFreeRate
+  });
+  
+  const startTimestamp = poolDayData[0].date * 1000;
+  const premium = contract.premium;
+  
+  if (logger) {
+    logger.log(`Real initial BTC price: $${initialPrice.toFixed(2)}`);
+    logger.log(`Real volatility: ${(realVolatility * 100).toFixed(1)}%`);
+    logger.log(`Premium paid: $${premium.toFixed(2)}`);
+  }
+  
+  for (let i = 0; i < poolDayData.length; i++) {
+    const dayData = poolDayData[i];
+    const currentPrice = parseFloat(dayData.token0Price);
+    const currentTimestamp = dayData.date * 1000;
+    const daysSinceOpen = (currentTimestamp - startTimestamp) / (1000 * 60 * 60 * 24);
+    
+    if (daysSinceOpen > params.expiryDays) {
+      break;
+    }
+    
+    // Calculate rolling volatility
+    const volatilityStartIndex = Math.max(0, i - volatilityLookbackDays);
+    const rollingPoolData = poolDayData.slice(volatilityStartIndex, i + 1);
+    const dynamicVolatility = calculateRealVolatility(rollingPoolData, volatilityLookbackDays);
+    
+    const optionValue = optionsService.calculateOptionValue(
+      contract,
+      currentPrice,
+      currentTimestamp,
+      dynamicVolatility
+    );
+    
+    const result: OptionBacktestResult = {
+      timestamp: currentTimestamp,
+      spotPrice: currentPrice,
+      optionValue: optionValue.value,
+      premium: premium,
+      timeToExpiry: daysToYears(optionValue.daysToExpiry),
+      intrinsicValue: optionValue.intrinsicValue,
+      timeValue: optionValue.timeValue,
+      delta: optionValue.delta,
+      theta: optionValue.theta,
+      unrealizedPnL: optionValue.value - premium,
+      daysSinceOpen: daysSinceOpen
+    };
+    
+    results.push(result);
+  }
+  
+  if (results.length > 0 && logger) {
+    const finalResult = results[results.length - 1];
+    const totalReturn = ((finalResult.optionValue - premium) / premium) * 100;
+    const priceReturn = ((finalResult.spotPrice - initialPrice) / initialPrice) * 100;
+    
+    logger.log('=== Option Backtest Summary (REAL DATA) ===');
+    logger.log(`Initial Premium: $${premium.toFixed(2)}`);
+    logger.log(`Final Value: $${finalResult.optionValue.toFixed(2)}`);
+    logger.log(`Option Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`);
+    logger.log(`BTC Price Return: ${priceReturn >= 0 ? '+' : ''}${priceReturn.toFixed(2)}%`);
+    logger.log(`Days Simulated: ${finalResult.daysSinceOpen.toFixed(1)}`);
+  }
+  
+  return results;
+}
+
+/**
+ * Run option backtest with mock price data
+ */
+function runOptionBacktest(
+  optionsService: OptionsService,
+  priceData: Array<{ timestamp: number; price: number }>,
+  params: OptionBacktestParams,
+  logger?: Logger
+): OptionBacktestResult[] {
+  const DEFAULT_VOLATILITY = 0.8;
+  
+  if (logger) {
+    logger.warn('Using runOptionBacktest with mock data. Consider using runOptionBacktestWithPoolData for real LP data.');
+  }
+  
+  const results: OptionBacktestResult[] = [];
+  
+  if (priceData.length === 0) {
+    return results;
+  }
+  
+  const contract = optionsService.createOption({
+    type: params.optionType,
+    strikePrice: params.strikePrice,
+    expiryDays: params.expiryDays,
+    underlyingAsset: 'BTC',
+    contractSize: params.contractSize,
+    currentSpotPrice: params.initialSpotPrice,
+    volatility: params.initialVolatility,
+    riskFreeRate: params.riskFreeRate
+  });
+  
+  const startTimestamp = priceData[0].timestamp;
+  const premium = contract.premium;
+  
+  // Calculate historical volatility from price data
+  const prices = priceData.map(d => d.price);
+  const historicalVolatility = prices.length >= 30 ? 
+    calculateHistoricalVolatility(prices.slice(-30)) : 
+    params.initialVolatility || DEFAULT_VOLATILITY;
+  
+  if (logger) {
+    logger.log(`Historical volatility: ${(historicalVolatility * 100).toFixed(1)}%`);
+    logger.log(`Premium paid: $${premium.toFixed(2)}`);
+  }
+  
+  for (const dataPoint of priceData) {
+    const daysSinceOpen = (dataPoint.timestamp - startTimestamp) / (1000 * 60 * 60 * 24);
+    
+    if (daysSinceOpen > params.expiryDays) {
+      break;
+    }
+    
+    const optionValue = optionsService.calculateOptionValue(
+      contract,
+      dataPoint.price,
+      dataPoint.timestamp,
+      historicalVolatility
+    );
+    
+    const result: OptionBacktestResult = {
+      timestamp: dataPoint.timestamp,
+      spotPrice: dataPoint.price,
+      optionValue: optionValue.value,
+      premium: premium,
+      timeToExpiry: daysToYears(optionValue.daysToExpiry),
+      intrinsicValue: optionValue.intrinsicValue,
+      timeValue: optionValue.timeValue,
+      delta: optionValue.delta,
+      theta: optionValue.theta,
+      unrealizedPnL: optionValue.value - premium,
+      daysSinceOpen: daysSinceOpen
+    };
+    
+    results.push(result);
+  }
+  
+  if (results.length > 0 && logger) {
+    const finalResult = results[results.length - 1];
+    const totalReturn = ((finalResult.optionValue - premium) / premium) * 100;
+    
+    logger.log('=== Option Backtest Summary ===');
+    logger.log(`Initial Premium: $${premium.toFixed(2)}`);
+    logger.log(`Final Value: $${finalResult.optionValue.toFixed(2)}`);
+    logger.log(`Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`);
+    logger.log(`Days Simulated: ${finalResult.daysSinceOpen.toFixed(1)}`);
+  }
+  
+  return results;
+}
 
 describe('OptionsService', () => {
   let service: OptionsService;
@@ -93,7 +314,7 @@ describe('OptionsService', () => {
         riskFreeRate: 0.05
       };
 
-      const callResults = service.runOptionBacktestWithPoolData(poolDayData, callBacktestParams);
+      const callResults = runOptionBacktestWithPoolData(service, poolDayData, callBacktestParams);
       
       expect(callResults).toBeDefined();
       expect(callResults.length).toBeGreaterThan(0);
@@ -107,7 +328,7 @@ describe('OptionsService', () => {
         riskFreeRate: 0.05
       };
 
-      const putResults = service.runOptionBacktestWithPoolData(poolDayData, putBacktestParams);
+      const putResults = runOptionBacktestWithPoolData(service, poolDayData, putBacktestParams);
       
       if (callResults.length > 0 && putResults.length > 0) {
         const finalCall = callResults[callResults.length - 1];
@@ -169,7 +390,7 @@ describe('OptionsService', () => {
       initialVolatility: 0.8
     };
 
-    const callResults = service.runOptionBacktest(mockPriceData, callParams);
+    const callResults = runOptionBacktest(service, mockPriceData, callParams);
     const finalResult = callResults[callResults.length - 1];
     
     console.log(`Controlled Test: BTC fell 10% | Call option lost $${Math.abs(finalResult.unrealizedPnL).toFixed(0)} (expected)`);
