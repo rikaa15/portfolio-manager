@@ -183,83 +183,174 @@ export class AerodromePosition {
 
   /**
    * Defilab tokensForStrategy implementation
+   *
+   * PURPOSE: Calculate the optimal token amounts (token0 and token1) needed to deploy
+   * a given USD investment into a concentrated liquidity position within a specific price range.
+   *
+   * UNISWAP V3 MATH BACKGROUND:
+   * - In Uniswap V3, liquidity positions are defined by price ranges [priceLow, priceHigh]
+   * - The ratio of token0:token1 depends on where the current price sits within this range
+   * - If price is at the center: roughly 50/50 split
+   * - If price is near upper bound: mostly token1 (higher-value token)
+   * - If price is near lower bound: mostly token0 (lower-value token)
+   * - If price is outside range: 100% of one token, 0% of the other
+   *
+   * WHY SQRT PRICES?
+   * - Uniswap V3 uses square root prices internally for mathematical efficiency
+   * - This allows for constant product formula: x * y = k to work with concentrated liquidity
+   * - sqrt(price) represents the "exchange rate" between tokens in Uniswap's internal math
    */
   private tokensForStrategy(
-    minRange: number,
-    maxRange: number,
-    investment: number,
-    price: number,
-    decimal: number,
+    minRange: number, // Lower price bound of the position (e.g., $100,000)
+    maxRange: number, // Upper price bound of the position (e.g., $110,000)
+    investment: number, // Total USD to invest (e.g., $1000)
+    price: number, // Current market price (e.g., $105,000)
+    decimal: number, // Decimal adjustment (token1Decimals - token0Decimals)
   ): [number, number] {
+    // Returns [amount0, amount1] in token units
+
+    // STEP 1: Convert prices to sqrt format with decimal adjustment
+    // The decimal adjustment accounts for different token decimal places (e.g., USDC=6, cbBTC=8)
     const sqrtPrice = Math.sqrt(price * Math.pow(10, decimal));
     const sqrtLow = Math.sqrt(minRange * Math.pow(10, decimal));
     const sqrtHigh = Math.sqrt(maxRange * Math.pow(10, decimal));
 
     let delta: number, amount0: number, amount1: number;
 
+    // CASE 1: CURRENT PRICE IS WITHIN THE RANGE (most common case)
+    // When price is between minRange and maxRange, we need both tokens
     if (sqrtPrice > sqrtLow && sqrtPrice < sqrtHigh) {
+      // Calculate the "delta" - this is the liquidity scaling factor
+      // The denominator represents the total USD value needed for 1 unit of liquidity:
+      // - (sqrtPrice - sqrtLow): USD value in token1 for 1 unit of liquidity
+      // - (1/sqrtPrice - 1/sqrtHigh) * price * 10^decimal: USD value in token0 for 1 unit of liquidity
       delta =
         investment /
         (sqrtPrice -
           sqrtLow +
           (1 / sqrtPrice - 1 / sqrtHigh) * (price * Math.pow(10, decimal)));
-      amount1 = delta * (sqrtPrice - sqrtLow);
-      amount0 = delta * (1 / sqrtPrice - 1 / sqrtHigh) * Math.pow(10, decimal);
+
+      // Calculate token amounts by multiplying delta by the respective components
+      amount1 = delta * (sqrtPrice - sqrtLow); // token1 amount (higher-value token, e.g., cbBTC)
+      amount0 = delta * (1 / sqrtPrice - 1 / sqrtHigh) * Math.pow(10, decimal); // token0 amount (lower-value token, e.g., USDC)
+
+      // CASE 2: CURRENT PRICE IS BELOW THE RANGE
+      // When price < minRange, position will be 100% token0, 0% token1
+      // This happens when market price is lower than our position's lower bound
     } else if (sqrtPrice < sqrtLow) {
+      // All investment goes into token0 since price is below our range
       delta = investment / ((1 / sqrtLow - 1 / sqrtHigh) * price);
-      amount1 = 0;
-      amount0 = delta * (1 / sqrtLow - 1 / sqrtHigh);
+      amount1 = 0; // No token1 needed
+      amount0 = delta * (1 / sqrtLow - 1 / sqrtHigh); // All investment in token0
+
+      // CASE 3: CURRENT PRICE IS ABOVE THE RANGE
+      // When price > maxRange, position will be 100% token1, 0% token0
+      // This happens when market price is higher than our position's upper bound
     } else {
+      // All investment goes into token1 since price is above our range
       delta = investment / (sqrtHigh - sqrtLow);
-      amount1 = delta * (sqrtHigh - sqrtLow);
-      amount0 = 0;
+      amount1 = delta * (sqrtHigh - sqrtLow); // All investment in token1
+      amount0 = 0; // No token0 needed
     }
+
     return [amount0, amount1];
   }
 
   /**
    * Defilab liquidityForStrategy implementation
+   *
+   * PURPOSE: Calculate the amount of liquidity units that can be created with given token amounts
+   * within a specific price range. This is the "reverse" of tokensForStrategy.
+   *
+   * UNISWAP V3 LIQUIDITY MATH BACKGROUND:
+   * - Liquidity (L) represents the amount of "virtual tokens" available for swapping
+   * - Higher liquidity = more tokens available = lower slippage for swaps
+   * - The relationship between token amounts and liquidity depends on the price range
+   * - Liquidity is calculated differently based on where current price sits relative to the range
+   *
+   * WHY 2^96?
+   * - Uniswap V3 uses Q96 fixed-point arithmetic for precision
+   * - 2^96 is a scaling factor that allows fractional numbers to be represented as integers
+   * - This prevents precision loss in smart contract calculations
+   *
+   * LIQUIDITY FORMULA LOGIC:
+   * - If price below range: L = Δx / ((1/√Pa - 1/√Pb) * 10^decimals0)
+   * - If price above range: L = Δy / ((√Pb - √Pa) * 10^decimals1)
+   * - If price in range: L = min(L_from_x, L_from_y) - use limiting factor
    */
   private liquidityForStrategy(
-    price: number,
-    low: number,
-    high: number,
-    tokens0: number,
-    tokens1: number,
+    price: number, // Current market price
+    low: number, // Lower price bound of position
+    high: number, // Upper price bound of position
+    tokens0: number, // Available amount of token0 (lower-value token)
+    tokens1: number, // Available amount of token1 (higher-value token)
   ): number {
+    // Returns liquidity units
+
+    // STEP 1: Calculate decimal adjustment (same as in tokensForStrategy)
     const decimal = this.token1Decimals - this.token0Decimals;
+
+    // STEP 2: Convert price bounds to Uniswap's Q96 format
+    // Q96 format: sqrt(price * 10^decimal) * 2^96
+    // This gives us the internal representation Uniswap uses for calculations
     const lowHigh = [
-      Math.sqrt(low * Math.pow(10, decimal)) * Math.pow(2, 96),
-      Math.sqrt(high * Math.pow(10, decimal)) * Math.pow(2, 96),
+      Math.sqrt(low * Math.pow(10, decimal)) * Math.pow(2, 96), // Lower bound in Q96
+      Math.sqrt(high * Math.pow(10, decimal)) * Math.pow(2, 96), // Upper bound in Q96
     ];
 
+    // STEP 3: Convert current price to Q96 format
     const sPrice = Math.sqrt(price * Math.pow(10, decimal)) * Math.pow(2, 96);
+
+    // STEP 4: Ensure proper ordering (sLow < sHigh)
     const sLow = Math.min(...lowHigh);
     const sHigh = Math.max(...lowHigh);
 
+    // CASE 1: CURRENT PRICE IS BELOW THE RANGE
+    // When price <= low bound, all liquidity comes from token0
+    // Formula: L = token0_amount / ((2^96 * (√Ph - √Pl)) / (√Ph * √Pl) / 10^decimals0)
     if (sPrice <= sLow) {
       return (
         tokens0 /
-        ((Math.pow(2, 96) * (sHigh - sLow)) /
-          sHigh /
-          sLow /
-          Math.pow(10, this.token0Decimals))
+        ((Math.pow(2, 96) * (sHigh - sLow)) / // Q96 price range difference
+          sHigh / // Divide by upper bound
+          sLow / // Divide by lower bound
+          Math.pow(10, this.token0Decimals)) // Adjust for token0 decimals
       );
+
+      // CASE 2: CURRENT PRICE IS WITHIN THE RANGE
+      // When low < price < high, we need to check both tokens and use the limiting factor
+      // Calculate liquidity from both token0 and token1, then take the minimum
     } else if (sPrice <= sHigh && sPrice > sLow) {
+      // Calculate liquidity that can be provided by available token0
+      // This represents how much liquidity our token0 balance can support
       const liq0 =
         tokens0 /
-        ((Math.pow(2, 96) * (sHigh - sPrice)) /
-          sHigh /
-          sPrice /
-          Math.pow(10, this.token0Decimals));
+        ((Math.pow(2, 96) * (sHigh - sPrice)) / // Q96 difference from current to upper bound
+          sHigh / // Divide by upper bound
+          sPrice / // Divide by current price
+          Math.pow(10, this.token0Decimals)); // Adjust for token0 decimals
+
+      // Calculate liquidity that can be provided by available token1
+      // This represents how much liquidity our token1 balance can support
       const liq1 =
         tokens1 /
-        ((sPrice - sLow) / Math.pow(2, 96) / Math.pow(10, this.token1Decimals));
+        ((sPrice - sLow) / // Q96 difference from lower bound to current
+          Math.pow(2, 96) / // Convert from Q96
+          Math.pow(10, this.token1Decimals)); // Adjust for token1 decimals
+
+      // The actual liquidity is limited by whichever token we have less of
+      // This ensures we don't try to provide more liquidity than our token balances allow
       return Math.min(liq1, liq0);
+
+      // CASE 3: CURRENT PRICE IS ABOVE THE RANGE
+      // When price >= high bound, all liquidity comes from token1
+      // Formula: L = token1_amount / ((√Ph - √Pl) / 2^96 / 10^decimals1)
     } else {
       return (
         tokens1 /
-        ((sHigh - sLow) / Math.pow(2, 96) / Math.pow(10, this.token1Decimals))
+        ((sHigh - sLow) / // Q96 price range difference
+          Math.pow(2, 96) / // Convert from Q96
+          Math.pow(10, this.token1Decimals)) // Adjust for token1 decimals
       );
     }
   }
@@ -391,32 +482,83 @@ export class AerodromePosition {
 
   /**
    * Defilab calcUnboundedFees implementation
+   *
+   * PURPOSE: Calculate the amount of fees earned per unit of liquidity over a specific time period.
+   * This tells us how much fees were generated and available for distribution to all liquidity providers.
+   *
+   * UNISWAP V3 FEE MECHANICS BACKGROUND:
+   * - Every swap in a Uniswap pool generates trading fees (typically 0.05%, 0.30%, or 1.00%)
+   * - These fees are accumulated globally and tracked per unit of liquidity
+   * - The pool stores "feeGrowthGlobal0X128" and "feeGrowthGlobal1X128" values
+   * - These represent cumulative fees per liquidity unit since the pool's creation
+   * - To get fees for a period, we subtract: current_fee_growth - previous_fee_growth
+   *
+   * WHY "UNBOUNDED"?
+   * - "Unbounded" means we calculate total fees as if we had infinite range liquidity
+   * - This gives us the theoretical maximum fees that could be earned
+   * - Individual positions earn a fraction based on their actual liquidity and range
+   * - Think of it as "total pie size" before we calculate our specific slice
+   *
+   * WHY X128 FORMAT?
+   * - Uniswap uses Q128 fixed-point arithmetic for fee growth tracking
+   * - 2^128 is a massive scaling factor to maintain precision with tiny fee amounts
+   * - This prevents precision loss when dealing with very small fee increments
+   * - Example: 0.000001 fee becomes 340,282,366,920,938,463,463,374,607,431,768,211,456 in X128
+   *
+   * DECIMAL NORMALIZATION:
+   * - Different tokens have different decimal places (USDC=6, cbBTC=8, WETH=18)
+   * - We must normalize to get actual token amounts rather than "wei" amounts
+   * - Example: 1,000,000 USDC-wei = 1.0 USDC (divide by 10^6)
+   * - Example: 100,000,000 cbBTC-wei = 1.0 cbBTC (divide by 10^8)
    */
   private calcUnboundedFees(
-    globalfee0: string,
-    prevGlobalfee0: string,
-    globalfee1: string,
-    prevGlobalfee1: string,
+    globalfee0: string, // Current cumulative fee growth for token0 (X128 format)
+    prevGlobalfee0: string, // Previous cumulative fee growth for token0 (X128 format)
+    globalfee1: string, // Current cumulative fee growth for token1 (X128 format)
+    prevGlobalfee1: string, // Previous cumulative fee growth for token1 (X128 format)
   ): [number, number] {
-    const fg0_0 =
-      parseInt(globalfee0) /
-      Math.pow(2, 128) /
-      Math.pow(10, this.token0Decimals);
-    const fg0_1 =
-      parseInt(prevGlobalfee0) /
-      Math.pow(2, 128) /
-      Math.pow(10, this.token0Decimals);
-    const fg1_0 =
-      parseInt(globalfee1) /
-      Math.pow(2, 128) /
-      Math.pow(10, this.token1Decimals);
-    const fg1_1 =
-      parseInt(prevGlobalfee1) /
-      Math.pow(2, 128) /
-      Math.pow(10, this.token1Decimals);
+    // Returns [fee0_per_liquidity, fee1_per_liquidity] in actual token units
 
-    const fg0 = fg0_0 - fg0_1;
-    const fg1 = fg1_0 - fg1_1;
+    // STEP 1: Convert token0 fee growth from X128 format to actual token units
+
+    // Current token0 fee growth per liquidity unit
+    // Process: X128_value → divide by 2^128 → divide by 10^decimals → actual_token_amount
+    const fg0_0 =
+      parseInt(globalfee0) / // Convert string to number
+      Math.pow(2, 128) / // Remove X128 scaling (convert from fixed-point)
+      Math.pow(10, this.token0Decimals); // Remove decimal scaling (convert from wei to actual tokens)
+
+    // Previous token0 fee growth per liquidity unit (same process)
+    const fg0_1 =
+      parseInt(prevGlobalfee0) / // Convert string to number
+      Math.pow(2, 128) / // Remove X128 scaling
+      Math.pow(10, this.token0Decimals); // Remove decimal scaling
+
+    // STEP 2: Convert token1 fee growth from X128 format to actual token units
+
+    // Current token1 fee growth per liquidity unit
+    const fg1_0 =
+      parseInt(globalfee1) / // Convert string to number
+      Math.pow(2, 128) / // Remove X128 scaling
+      Math.pow(10, this.token1Decimals); // Remove decimal scaling (note: different decimals!)
+
+    // Previous token1 fee growth per liquidity unit (same process)
+    const fg1_1 =
+      parseInt(prevGlobalfee1) / // Convert string to number
+      Math.pow(2, 128) / // Remove X128 scaling
+      Math.pow(10, this.token1Decimals); // Remove decimal scaling
+
+    // STEP 3: Calculate fee growth delta (difference) for each token
+    // This gives us the fees earned per liquidity unit during this specific time period
+
+    const fg0 = fg0_0 - fg0_1; // Token0 fees earned per liquidity unit (in actual token0 units)
+    const fg1 = fg1_0 - fg1_1; // Token1 fees earned per liquidity unit (in actual token1 units)
+
+    // EXAMPLE INTERPRETATION:
+    // If fg0 = 0.000001 and we have 1,000,000 liquidity units:
+    // - We earned 0.000001 * 1,000,000 = 1.0 token0 in fees
+    // If fg1 = 0.0000005 and we have 1,000,000 liquidity units:
+    // - We earned 0.0000005 * 1,000,000 = 0.5 token1 in fees
 
     return [fg0, fg1];
   }
