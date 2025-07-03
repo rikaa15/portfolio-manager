@@ -114,14 +114,10 @@ export class AerodromeLpService {
       const tokensOwed0 = userPosition.position.tokensOwed0 || 0n;
       const tokensOwed1 = userPosition.position.tokensOwed1 || 0n;
       
-      // Calculate accrued fees using gauge rewards (pass userAddress explicitly)
+      // Calculate accrued fees using gauge rewards
       const { accruedFees0, accruedFees1 } = await this.calculateAccruedFees(
-        poolAddress,
-        userPosition.position,
-        userPosition.poolInfo,
         this.provider,
-        userAddress,  // Pass userAddress explicitly
-        userPosition.tokenId  // Pass tokenId explicitly
+        userPosition.tokenId
       );
       
       // Use the larger of accrued fees vs collected fees
@@ -212,11 +208,7 @@ export class AerodromeLpService {
    * Calculate accrued fees for a position
    */
   private async calculateAccruedFees(
-    poolAddress: string,
-    position: any,
-    poolInfo: any,
     provider: JsonRpcProvider,
-    userAddress: string,
     tokenId: string
   ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
     // Try collect.staticCall() first
@@ -249,28 +241,9 @@ export class AerodromeLpService {
       this.logger.warn(`collect.staticCall() failed: ${error.message}`);
     }
 
-    // Fallback to tokensOwed from position data
     return {
-      accruedFees0: position.tokensOwed0 || 0n,
-      accruedFees1: position.tokensOwed1 || 0n
+      accruedFees0: 0n,
+      accruedFees1: 0n
     };
-  }
-
-  private safeParseUnits(value: string, decimals: number): bigint {
-    try {
-      if (!value || value === '0' || value === '') {
-        return 0n;
-      }
-      
-      const parts = value.split('.');
-      if (parts.length === 2 && parts[1].length > decimals) {
-        const truncatedValue = parts[0] + '.' + parts[1].substring(0, decimals);
-        return ethers.parseUnits(truncatedValue, decimals);
-      }
-      
-      return ethers.parseUnits(value, decimals);
-    } catch (error: any) {
-      return 0n;
-    }
   }
 }

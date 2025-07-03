@@ -111,3 +111,22 @@ export interface SubgraphPositionFees {
   token0Decimals: string;
   token1Decimals: string;
 }
+
+/**
+ * Position structure returned from Position Manager contract
+ * Based on the positions(uint256 tokenId) function signature
+ */
+export interface PositionManagerPosition {
+  nonce: bigint;
+  operator: string;
+  token0: string;
+  token1: string;
+  fee: number;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+  feeGrowthInside0LastX128: bigint;
+  feeGrowthInside1LastX128: bigint;
+  tokensOwed0: bigint;
+  tokensOwed1: bigint;
+}
