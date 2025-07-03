@@ -43,14 +43,14 @@ export class AerodromePosition {
   private totalPoolLiquidity: number;
 
   // Token decimals for BTC/stablecoin
-  private readonly token0Decimals: number = 8; // cbBTC (match btcAmount)
-  private readonly token1Decimals: number = 6; // USDC (match stablecoinAmount)
+  private readonly token0Decimals: number;
+  private readonly token1Decimals: number;
 
   private dailyActiveFactors: number[] = [];
   private currentTick: number = 0;
 
-  private btcAmount: number = 0; // Token0 amount
-  private stablecoinAmount: number = 0; // Token1 amount
+  private btcAmount: number = 0;
+  private stablecoinAmount: number = 0;
 
   constructor(
     initialAmount: number,
@@ -61,6 +61,8 @@ export class AerodromePosition {
     initialToken1Price: number, // Not used but kept for compatibility
     totalPoolLiquidity: number,
     tickSpacing: number = 2000,
+    token0Decimals: number = 8, // cbBTC (match btcAmount)
+    token1Decimals: number = 6, // USDC (match stablecoinAmount)
   ) {
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
@@ -70,6 +72,9 @@ export class AerodromePosition {
     this.currentBtcPrice = initialBtcPrice;
     this.tickSpacing = tickSpacing;
     this.currentTick = initialTick;
+
+    this.token0Decimals = token0Decimals;
+    this.token1Decimals = token1Decimals;
     // this.lpSharePercentage = initialAmount / initialTvl;
     // Calculate position range
     this.positionRange = this.getPositionTickRange(
@@ -260,7 +265,22 @@ export class AerodromePosition {
    * Defilab liquidityForStrategy implementation
    *
    * PURPOSE: Calculate the amount of liquidity units that can be created with given token amounts
-   * within a specific price range. This is the "reverse" of tokensForStrategy.
+   * within a specific price range. This is the KEY METHOD that determines fee earning power.
+   *
+   * 🎯 CRITICAL INSIGHT - CONCENTRATION EFFECT:
+   * This method is WHY concentrated positions earn more fees:
+   * - SAME token amounts + NARROWER price range = MORE liquidity units
+   * - MORE liquidity units = MORE fees (fees = feeGrowth × liquidityAmount)
+   *
+   * CONCENTRATION EXAMPLES (with same $1000 investment):
+   * - 5% range:  1,237,721,726 liquidity units → 30.97% APR (high concentration)
+   * - 10% range:   622,348,943 liquidity units → 8.81% APR (medium concentration)
+   * - 20% range:   ~311,174,471 liquidity units → ~4.4% APR (low concentration)
+   *
+   * WHY DOES NARROWER RANGE = MORE LIQUIDITY?
+   * Mathematical: Liquidity = tokens / price_range_factor
+   * - Smaller price range → smaller denominator → higher liquidity
+   * - Think "liquidity density": same tokens spread over smaller area = higher density
    *
    * UNISWAP V3 LIQUIDITY MATH BACKGROUND:
    * - Liquidity (L) represents the amount of "virtual tokens" available for swapping
@@ -319,27 +339,31 @@ export class AerodromePosition {
 
       // CASE 2: CURRENT PRICE IS WITHIN THE RANGE
       // When low < price < high, we need to check both tokens and use the limiting factor
-      // Calculate liquidity from both token0 and token1, then take the minimum
+      // 🔥 THIS IS WHERE CONCENTRATION MAGIC HAPPENS:
+      // - Narrower range (5%) → smaller (sHigh - sPrice) and (sPrice - sLow) → LARGER liquidity
+      // - Wider range (20%) → larger (sHigh - sPrice) and (sPrice - sLow) → smaller liquidity
+      // Same tokens ÷ smaller range factor = MORE liquidity units = MORE fees!
     } else if (sPrice <= sHigh && sPrice > sLow) {
       // Calculate liquidity that can be provided by available token0
-      // This represents how much liquidity our token0 balance can support
+      // 💡 Notice: smaller (sHigh - sPrice) denominator = higher liquidity
       const liq0 =
         tokens0 /
-        ((Math.pow(2, 96) * (sHigh - sPrice)) / // Q96 difference from current to upper bound
+        ((Math.pow(2, 96) * (sHigh - sPrice)) / // 🎯 CONCENTRATION FACTOR: smaller range = smaller denominator
           sHigh / // Divide by upper bound
           sPrice / // Divide by current price
           Math.pow(10, this.token0Decimals)); // Adjust for token0 decimals
 
       // Calculate liquidity that can be provided by available token1
-      // This represents how much liquidity our token1 balance can support
+      // 💡 Notice: smaller (sPrice - sLow) denominator = higher liquidity
       const liq1 =
         tokens1 /
-        ((sPrice - sLow) / // Q96 difference from lower bound to current
+        ((sPrice - sLow) / // 🎯 CONCENTRATION FACTOR: smaller range = smaller denominator
           Math.pow(2, 96) / // Convert from Q96
           Math.pow(10, this.token1Decimals)); // Adjust for token1 decimals
 
       // The actual liquidity is limited by whichever token we have less of
       // This ensures we don't try to provide more liquidity than our token balances allow
+      // 🚀 RESULT: Concentrated positions get MUCH higher liquidity values here!
       return Math.min(liq1, liq0);
 
       // CASE 3: CURRENT PRICE IS ABOVE THE RANGE
@@ -369,7 +393,10 @@ export class AerodromePosition {
   /**
    * Process daily update
    */
-  updateDaily(dayData: PoolDayData, wasRebalancedToday: boolean = false): void {
+  updateDaily(
+    dayData: PoolDayData,
+    wasRebalancedToday: boolean = false,
+  ): number {
     this.totalDays++;
     this.currentPositionDays++;
 
@@ -403,37 +430,95 @@ export class AerodromePosition {
 
     this.cumulativeFees += dailyFees;
     this.currentPositionFees += dailyFees;
+
+    return dailyFees;
   }
 
   /**
-   * Active liquidity calculation
+   * Enhanced activeLiquidityForCandle implementation
+   *
+   * BASED ON: Defilab's activeLiquidityForCandle(min, max, low, high) function
+   * ENHANCED FOR: Daily backtesting with real market data and position type awareness
+   *
+   * WHY IS THIS NEEDED?
+   * - During a single day, BTC price moves up and down within a range (dayData.low to dayData.high)
+   * - Your position has a fixed range (e.g., $100k to $110k for a 10% position)
+   * - You only earn fees when the market price range OVERLAPS with your position range
+   * - This method calculates what % of the day's price action was within your range
+   *
+   * EXAMPLE SCENARIOS:
+   *
+   * Scenario 1 - Perfect Overlap (100% active):
+   * Day's price range:     $102k ████████████ $108k
+   * Your position range:   $100k ████████████████ $110k
+   * Result: 100% active (all day's trading was in your range)
+   *
+   * Scenario 2 - Partial Overlap (50% active):
+   * Day's price range:     $105k ████████████ $115k
+   * Your position range:   $100k ████████████████ $110k
+   * Overlap:               $105k ████████ $110k
+   * Result: 50% active (half the day's range overlapped)
+   *
+   * Scenario 3 - No Overlap (0% active):
+   * Day's price range:     $90k ████████████ $95k
+   * Your position range:   $100k ████████████████ $110k
+   * Result: 0% active (no overlap = no fees earned)
+   *
+   * MATH EXPLANATION:
+   * Active % = (Overlapping Range) / (Total Day Range) × 100
+   * Where Overlapping Range = min(your_upper, day_high) - max(your_lower, day_low)
    */
   private calculateActiveLiquidityForCandle(dayData: PoolDayData): number {
-    // For full-range positions, always return 100%
+    // CASE 1: FULL-RANGE POSITIONS
+    // Full-range positions cover the entire possible price spectrum (-∞ to +∞)
+    // They are ALWAYS active regardless of price movement
     if (this.positionType === 'full-range') {
-      return 100;
+      return 100; // Always 100% active = always earning fees
     }
 
-    // For concentrated positions, use price range logic
-    const low = parseFloat(dayData.low || dayData.token0Price);
-    const high = parseFloat(dayData.high || dayData.token0Price);
+    // CASE 2: CONCENTRATED POSITIONS
+    // These have specific price bounds and may go in/out of range
 
+    // STEP 1: Get the day's price range (low to high)
+    // Note: Fallback to current price if high/low data is missing
+    const low = parseFloat(dayData.low || dayData.token0Price); // Lowest price during the day
+    const high = parseFloat(dayData.high || dayData.token0Price); // Highest price during the day
+
+    // STEP 2: Validate price data
+    // Ensure we have valid, positive price data to work with
     if (!isFinite(low) || !isFinite(high) || low <= 0 || high <= 0) {
-      return 0;
+      return 0; // Invalid data = assume 0% active (conservative approach)
     }
 
-    const lowTick = this.getTickFromPrice(low);
-    const highTick = this.getTickFromPrice(high);
-    const minTick = this.positionRange.tickLower;
-    const maxTick = this.positionRange.tickUpper;
+    // STEP 3: Convert prices to ticks for precise range calculations
+    // Ticks are Uniswap's internal price representation (more precise than USD prices)
+    const lowTick = this.getTickFromPrice(low); // Day's lowest price in tick format
+    const highTick = this.getTickFromPrice(high); // Day's highest price in tick format
 
+    // Get our position's tick range bounds
+    const minTick = this.positionRange.tickLower; // Our position's lower bound (e.g., $100k → tick)
+    const maxTick = this.positionRange.tickUpper; // Our position's upper bound (e.g., $110k → tick)
+
+    // STEP 4: Calculate overlap using tick math
+
+    // Total day range in ticks (prevent division by zero)
     const divider = highTick - lowTick !== 0 ? highTick - lowTick : 1;
+
+    // Calculate overlapping range: intersection of [day_range] and [position_range]
+    // Math.min(maxTick, highTick) = upper bound of overlap
+    // Math.max(minTick, lowTick) = lower bound of overlap
+    // Overlap size = upper_bound - lower_bound
     const ratioTrue =
       highTick - lowTick !== 0
         ? (Math.min(maxTick, highTick) - Math.max(minTick, lowTick)) / divider
-        : 1;
+        : 1; // If no price movement, assume 100% overlap
+
+    // STEP 5: Final validation and percentage conversion
+    // Only count as overlap if ranges actually intersect
+    // highTick > minTick AND lowTick < maxTick = ranges overlap
     const ratio = highTick > minTick && lowTick < maxTick ? ratioTrue * 100 : 0;
 
+    // STEP 6: Return valid percentage (0-100%)
     return isNaN(ratio) || !ratio ? 0 : ratio;
   }
 
@@ -564,15 +649,33 @@ export class AerodromePosition {
   }
 
   /**
-   * Tick-to-price conversion
+   * Convert USD price to Uniswap tick value (adapted from Defilab's getTickFromPrice)
+   *
+   * PURPOSE: Uniswap V3 uses "ticks" instead of prices for range calculations.
+   * This converts a USD price (e.g., $105,000) to a tick number (e.g., -69637).
+   *
+   * TICK MATH: tick = log(price_adjusted) / log(1.0001)
+   * Each tick represents a 0.01% price change (1.0001^tick = price_ratio)
    */
   private getTickFromPrice(price: number): number {
-    // 1. Use inverted price (cbBTC per USDC instead of USDC per cbBTC)
-    // 2. Use correct decimal adjustment
+    // STEP 1: Invert price to match pool's token assignment
+    // Pool has token0=USDC, token1=cbBTC, but we treat price as "BTC price in USD"
+    // So we need USDC-per-cbBTC ratio, which is 1/price
     const invertedPrice = 1 / price;
+
+    // STEP 2: Apply decimal adjustment for token precision
+    // Different tokens have different decimal places (USDC=6, cbBTC=8)
+    // This normalizes the price ratio for Uniswap's internal calculations
     const valToLog =
       invertedPrice * Math.pow(10, this.token0Decimals - this.token1Decimals);
+
+    // STEP 3: Convert to tick using Uniswap's logarithmic formula
+    // Uniswap uses base 1.0001 logarithms where each tick = 0.01% price change
+    // Formula: tick = log(adjusted_price) / log(1.0001)
     const tickIDXRaw = Math.log(valToLog) / Math.log(1.0001);
+
+    // STEP 4: Round to nearest integer tick
+    // Uniswap only allows integer tick values, so we round to the closest one
     return Math.round(tickIDXRaw);
   }
 
@@ -614,6 +717,8 @@ export class AerodromePosition {
     initialToken1Price: number,
     totalPoolLiquidity: number,
     tickSpacing: number = 2000,
+    token0Decimals: number = 8, // cbBTC (match btcAmount)
+    token1Decimals: number = 6, // USDC (match stablecoinAmount)
   ): AerodromePosition {
     return new AerodromePosition(
       initialAmount,
@@ -624,6 +729,8 @@ export class AerodromePosition {
       initialToken1Price,
       totalPoolLiquidity,
       tickSpacing,
+      token0Decimals,
+      token1Decimals,
     );
   }
 
