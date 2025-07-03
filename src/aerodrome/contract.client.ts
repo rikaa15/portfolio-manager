@@ -29,6 +29,9 @@ const GAUGE_ABI = [
 
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, int24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
+  'function balanceOf(address owner) external view returns (uint256)',
+  'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
+  'function ownerOf(uint256 tokenId) external view returns (address)',
 ];
 
 function calculatePricesFromSqrtPrice(
@@ -129,8 +132,7 @@ export async function fetchPoolInfoDirect(
       gaugeFees0 = fees0.toString();
       gaugeFees1 = fees1.toString();
     } catch {
-      console.error('Gauge fees not available');
-      // Gauge fees not available
+      // Gauge fees not available - continue without them
     }
 
     const sqrtPriceX96 = slot0[0];
@@ -293,9 +295,6 @@ export async function checkGaugeStaking(
     return { isStaked, pendingRewards };
   } catch (error: any) {
     // If gauge calls fail, assume not staked
-    console.warn(
-      `Could not check gauge staking for ${tokenId}: ${error.message}`,
-    );
     return { isStaked: false, pendingRewards: '0' };
   }
 }
@@ -447,3 +446,61 @@ export const getGaugeInfo = async (
     return { isStaked: false, pendingRewards: '0' };
   }
 };
+
+/**
+ * Get user's position (staked or unstaked) in a specific pool
+ * Returns the tokenId and position details if found
+ */
+export async function getUserPosition(
+  userAddress: string,
+  poolAddress: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+  knownGaugeAddress?: string,
+): Promise<{
+  tokenId: string;
+  position: any;
+  poolInfo: ContractPoolInfo;
+} | null> {
+  try {
+    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider, undefined, knownGaugeAddress);
+
+    const positionManager = new ethers.Contract(
+      positionManagerAddress,
+      POSITION_MANAGER_ABI,
+      provider,
+    );
+
+    const balance = await positionManager.balanceOf(userAddress);
+    
+    if (balance === 0n) {
+      return null;
+    }
+
+    for (let i = 0; i < Number(balance); i++) {
+      try {
+        const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
+        const position = await positionManager.positions(tokenId);
+        
+        if (
+          (position.token0.toLowerCase() === poolInfo.token0.address.toLowerCase() &&
+           position.token1.toLowerCase() === poolInfo.token1.address.toLowerCase()) ||
+          (position.token0.toLowerCase() === poolInfo.token1.address.toLowerCase() &&
+           position.token1.toLowerCase() === poolInfo.token0.address.toLowerCase())
+        ) {
+          return {
+            tokenId: tokenId.toString(),
+            position,
+            poolInfo,
+          };
+        }
+      } catch (error) {
+        continue;
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    throw new Error(`Failed to get user position: ${error.message}`);
+  }
+}

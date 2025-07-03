@@ -25,6 +25,8 @@ export interface AerodromeLiquidityPosition {
   liquidityAmount: string;
   isStaked: boolean;
   pendingAeroRewards?: string;
+  token0Fees?: string;
+  token1Fees?: string;
 }
 
 export interface ContractPoolInfo {
@@ -97,4 +99,34 @@ export interface TickData {
   feeGrowthOutside0X128: string;
   feeGrowthOutside1X128: string;
   feesUSD: string;
+}
+
+export interface SubgraphPositionFees {
+  collectedFeesToken0: string;
+  collectedFeesToken1: string;
+  uncollectedFeesToken0?: string;
+  uncollectedFeesToken1?: string;
+  token0Symbol: string;
+  token1Symbol: string;
+  token0Decimals: string;
+  token1Decimals: string;
+}
+
+/**
+ * Position structure returned from Position Manager contract
+ * Based on the positions(uint256 tokenId) function signature
+ */
+export interface PositionManagerPosition {
+  nonce: bigint;
+  operator: string;
+  token0: string;
+  token1: string;
+  fee: number;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: bigint;
+  feeGrowthInside0LastX128: bigint;
+  feeGrowthInside1LastX128: bigint;
+  tokensOwed0: bigint;
+  tokensOwed1: bigint;
 }

@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ethers, JsonRpcProvider, Wallet } from 'ethers';
-import { BaseConfig, Config } from '../config/configuration';
-import configuration from '../config/configuration';
-import {
-  calculatePositionAmounts,
-  checkGaugeStaking,
-  getUserStakedPosition,
+import { Config, BaseConfig } from '../config/configuration';
+import { ethers, Wallet, JsonRpcProvider } from 'ethers';
+import { 
+  getUserPosition, 
+  calculatePositionAmounts, 
+  fetchPoolInfoDirect,
+  getTokenInfo,
+  getGaugeInfo,
 } from './contract.client';
 import { AerodromeLiquidityPosition } from './types';
 
@@ -73,7 +74,7 @@ export class AerodromeLpService {
         `Fetching Aerodrome LP position for user ${userAddress} in pool ${poolAddress}...`,
       );
 
-      const userPosition = await getUserStakedPosition(
+      const userPosition = await getUserPosition(
         userAddress,
         poolAddress,
         this.config.contracts.positionManager,
@@ -83,10 +84,16 @@ export class AerodromeLpService {
 
       if (!userPosition) {
         this.logger.log(
-          `No staked positions found for user ${userAddress} in pool ${poolAddress}`,
+          `No LP positions found for user ${userAddress} in pool ${poolAddress}`,
         );
         return null;
       }
+      
+      this.logger.log(`=== POSITION FOUND ===`);
+      this.logger.log(`Token ID: ${userPosition.tokenId}`);
+      this.logger.log(`Pool: ${poolAddress}`);
+      this.logger.log(`Token0: ${userPosition.poolInfo.token0.symbol} (${userPosition.poolInfo.token0.address})`);
+      this.logger.log(`Token1: ${userPosition.poolInfo.token1.symbol} (${userPosition.poolInfo.token1.address})`);
 
       const { token0Balance, token1Balance } = await calculatePositionAmounts(
         poolAddress,
@@ -95,12 +102,31 @@ export class AerodromeLpService {
         this.provider,
       );
 
-      const { isStaked, pendingRewards } = await checkGaugeStaking(
+      const { isStaked, pendingRewards } = await getGaugeInfo(
         userAddress,
-        userPosition.tokenId,
+        BigInt(userPosition.tokenId),
         userPosition.poolInfo.gauge.address,
         this.provider,
       );
+
+      // Extract unclaimed fees from position NFT
+      // Position structure: [nonce, operator, token0, token1, fee, tickLower, tickUpper, liquidity, feeGrowthInside0LastX128, feeGrowthInside1LastX128, tokensOwed0, tokensOwed1]
+      const tokensOwed0 = userPosition.position.tokensOwed0 || 0n;
+      const tokensOwed1 = userPosition.position.tokensOwed1 || 0n;
+      
+      // Calculate accrued fees using gauge rewards
+      const { accruedFees0, accruedFees1 } = await this.calculateAccruedFees(
+        this.provider,
+        userPosition.tokenId
+      );
+      
+      // Use the larger of accrued fees vs collected fees
+      const totalFees0 = accruedFees0 > tokensOwed0 ? accruedFees0 : tokensOwed0;
+      const totalFees1 = accruedFees1 > tokensOwed1 ? accruedFees1 : tokensOwed1;
+      
+      // Format fees to human-readable strings
+      const token0Fees = ethers.formatUnits(totalFees0, parseInt(userPosition.poolInfo.token0.decimals));
+      const token1Fees = ethers.formatUnits(totalFees1, parseInt(userPosition.poolInfo.token1.decimals));
 
       const result: AerodromeLiquidityPosition = {
         userAddress,
@@ -113,6 +139,8 @@ export class AerodromeLpService {
         liquidityAmount: userPosition.position.liquidity.toString(),
         isStaked,
         pendingAeroRewards: pendingRewards,
+        token0Fees,
+        token1Fees,
       };
 
       this.logger.log('=== AERODROME POSITION FOUND ===');
@@ -122,6 +150,7 @@ export class AerodromeLpService {
       );
       this.logger.log(`Staked: ${result.isStaked}`);
       this.logger.log(`Pending AERO rewards: ${pendingRewards}`);
+      this.logger.log(`Unclaimed fees: ${token0Fees} ${userPosition.poolInfo.token0.symbol} + ${token1Fees} ${userPosition.poolInfo.token1.symbol}`);
 
       return result;
     } catch (error: any) {
@@ -170,64 +199,51 @@ export class AerodromeLpService {
       throw error;
     }
   }
+
   async getSignerAddress(): Promise<string> {
     return this.signer.getAddress();
   }
+
+  /**
+   * Calculate accrued fees for a position
+   */
+  private async calculateAccruedFees(
+    provider: JsonRpcProvider,
+    tokenId: string
+  ): Promise<{ accruedFees0: bigint; accruedFees1: bigint }> {
+    // Try collect.staticCall() first
+    try {
+      const positionManagerContract = new ethers.Contract(
+        this.config.contracts.positionManager, 
+        [
+          'function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external returns (uint256 amount0, uint256 amount1)'
+        ], 
+        provider
+      );
+      
+      const MAX_UINT_128 = BigInt('0xffffffffffffffffffffffffffffffff');
+      const collectParams = {
+        tokenId: tokenId,
+        recipient: ethers.ZeroAddress,
+        amount0Max: MAX_UINT_128,
+        amount1Max: MAX_UINT_128
+      };
+      
+      const result = await positionManagerContract.collect.staticCall(collectParams);
+      
+      if (result.amount0 > 0n || result.amount1 > 0n) {
+        return {
+          accruedFees0: result.amount0,
+          accruedFees1: result.amount1
+        };
+      }
+    } catch (error: any) {
+      this.logger.warn(`collect.staticCall() failed: ${error.message}`);
+    }
+
+    return {
+      accruedFees0: 0n,
+      accruedFees1: 0n
+    };
+  }
 }
-// async function main() {
-//   try {
-//     console.log('Testing Aerodrome getPosition method...');
-
-//     const config = configuration();
-//     const configService = new ConfigService<Config>(config);
-
-//     // Create aerodrome service instance
-//     const aerodromeService = new AerodromeLpService(configService);
-//     await aerodromeService.bootstrap();
-
-//     const userAddress = process.env.WALLET_ADDRESS ?? '';
-//     const poolAddress = config.base.contracts.pools[0];
-
-//     console.log(`Testing with wallet: ${userAddress}`);
-//     console.log(`Testing with pool: ${poolAddress}`);
-
-//     // Test individual position
-//     const position = await aerodromeService.getPosition(
-//       userAddress,
-//       poolAddress,
-//     );
-
-//     if (position) {
-//       console.log('Single position found:');
-//       console.log(JSON.stringify(position, null, 2));
-//     } else {
-//       console.log('No position found for this wallet in the specified pool');
-//     }
-
-//     console.log('\n=== Testing getPositionsByOwner ===');
-//     const allPositions =
-//       await aerodromeService.getPositionsByOwner(userAddress);
-
-//     if (allPositions.length > 0) {
-//       console.log(`Found ${allPositions.length} total positions:`);
-//       allPositions.forEach((pos, index) => {
-//         console.log(`\nPosition ${index + 1}:`);
-//         console.log(`  Pool: ${pos.token0Symbol}/${pos.token1Symbol}`);
-//         console.log(
-//           `  Liquidity: ${pos.token0Balance} ${pos.token0Symbol} + ${pos.token1Balance} ${pos.token1Symbol}`,
-//         );
-//         console.log(`  Staked: ${pos.isStaked}`);
-//         console.log(`  Pending AERO: ${pos.pendingAeroRewards}`);
-//       });
-//     } else {
-//       console.log('No positions found for this wallet');
-//     }
-//   } catch (error: any) {
-//     console.error(`Test failed: ${error.message}`);
-//     throw error;
-//   }
-// }
-
-// if (require.main === module) {
-//   main().catch(console.error);
-// }

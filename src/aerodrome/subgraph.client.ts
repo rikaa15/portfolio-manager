@@ -91,6 +91,7 @@ const POOL_POSITIONS_QUERY = `
     }
   }
 `;
+
 export async function executeQuery(
   query: string,
   variables: any,
