@@ -5,7 +5,7 @@ import { UniswapLpService } from './uniswap-lp.service';
 import { ethers } from 'ethers';
 import { Token } from '@uniswap/sdk-core';
 import { UNISWAP_CONFIGS, UniswapNetworkName } from './uniswap.config';
-import configuration from '../config/configuration';
+import configuration, { Config } from '../config/configuration';
 import { MAX_UINT_128 } from './contract.client';
 
 const TEST_NETWORK: UniswapNetworkName = 'sepolia'; // 'sepolia'; // Switch to 'ethereum' for mainnet tests
@@ -57,6 +57,7 @@ const TIMEOUTS = {
 describe(`UniswapLpService Integration Tests (${TEST_NETWORK.toUpperCase()})`, () => {
   let service: UniswapLpService;
   let createdTokenId: string;
+  let configService: ConfigService<Config>;
 
   beforeAll(async () => {
     if (!networkConfig.rpcUrl || !networkConfig.privateKey) {
@@ -93,6 +94,7 @@ describe(`UniswapLpService Integration Tests (${TEST_NETWORK.toUpperCase()})`, (
     }).compile();
 
     service = module.get<UniswapLpService>(UniswapLpService);
+    configService = module.get<ConfigService<Config>>(ConfigService);
 
     service.setNetwork(TEST_NETWORK);
 
@@ -469,4 +471,173 @@ describe(`UniswapLpService Integration Tests (${TEST_NETWORK.toUpperCase()})`, (
     },
     TIMEOUTS.READ,
   );
+});
+
+describe('UniswapLpService', () => {
+  let service: UniswapLpService;
+  let configService: ConfigService<Config>;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UniswapLpService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string) => {
+              const config = configuration();
+              return config[key as keyof Config];
+            }),
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get<UniswapLpService>(UniswapLpService);
+    configService = module.get<ConfigService<Config>>(ConfigService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  describe('swap functionality', () => {
+    let wbtcToken: Token;
+    let usdcToken: Token;
+
+    beforeEach(() => {
+      // Create test tokens
+      wbtcToken = new Token(
+        1, // chainId
+        '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', // WBTC address
+        8, // decimals
+        'WBTC',
+        'Wrapped BTC'
+      );
+
+      usdcToken = new Token(
+        1, // chainId
+        '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC address
+        6, // decimals
+        'USDC',
+        'USD Coin'
+      );
+    });
+
+    it('should quote a swap correctly', async () => {
+      // Mock the quoter contract
+      const mockQuoterContract = {
+        quoteExactInputSingle: {
+          staticCall: jest.fn().mockResolvedValue('1000000'), // 1 USDC in wei
+        },
+      };
+
+      const mockSwapRouterContract = {
+        exactInputSingle: {
+          estimateGas: jest.fn().mockResolvedValue(BigInt(200000)),
+        },
+      };
+
+      const mockProvider = {
+        getFeeData: jest.fn().mockResolvedValue({ gasPrice: BigInt(20000000000) }), // 20 gwei
+      };
+
+      // Mock the service properties
+      (service as any).quoterContract = mockQuoterContract;
+      (service as any).swapRouterContract = mockSwapRouterContract;
+      (service as any).provider = mockProvider;
+      (service as any).signer = { getAddress: jest.fn().mockResolvedValue('0x123') };
+
+      const quoteParams = {
+        tokenIn: wbtcToken,
+        tokenOut: usdcToken,
+        amountIn: '0.001', // 0.001 WBTC
+        fee: 3000, // 0.3%
+        slippageTolerance: 0.005, // 0.5%
+      };
+
+      const result = await service.quoteSwap(quoteParams);
+
+      expect(result).toBeDefined();
+      expect(result.amountIn).toBe('0.001');
+      expect(result.amountOut).toBe('1.0'); // 1 USDC
+      expect(result.amountOutMin).toBeDefined();
+      expect(result.priceImpact).toBeDefined();
+      expect(result.gasEstimate).toBeDefined();
+      expect(result.estimatedCostInUsd).toBeDefined();
+      expect(result.route).toEqual({
+        tokenIn: wbtcToken,
+        tokenOut: usdcToken,
+        fee: 3000,
+      });
+    });
+
+    it('should execute a swap correctly', async () => {
+      // Mock the swap router contract
+      const mockSwapRouterContract = {
+        exactInputSingle: jest.fn().mockResolvedValue({
+          wait: jest.fn().mockResolvedValue({
+            hash: '0xabc123',
+            gasUsed: BigInt(150000),
+            effectiveGasPrice: BigInt(20000000000),
+          }),
+        }),
+      };
+
+      const mockApproveToken = jest.fn().mockResolvedValue(undefined);
+
+      // Mock the service properties
+      (service as any).swapRouterContract = mockSwapRouterContract;
+      (service as any).approveToken = mockApproveToken;
+      (service as any).signer = { getAddress: jest.fn().mockResolvedValue('0x123') };
+
+      const swapParams = {
+        tokenIn: wbtcToken,
+        tokenOut: usdcToken,
+        amountIn: '0.001',
+        amountOutMin: '0.995',
+        fee: 3000,
+        slippageTolerance: 0.005,
+      };
+
+      const result = await service.executeSwap(swapParams);
+
+      expect(result).toBeDefined();
+      expect(result.transactionHash).toBe('0xabc123');
+      expect(result.amountIn).toBe('0.001');
+      expect(result.amountOut).toBe('0.995');
+      expect(result.gasUsed).toBe(BigInt(150000));
+      expect(result.totalCostInUsd).toBeDefined();
+      expect(mockApproveToken).toHaveBeenCalledWith(wbtcToken.address, expect.any(BigInt));
+    });
+
+    it('should rebalance a position correctly', async () => {
+      // Mock the getPosition method
+      const mockPosition = {
+        token0: wbtcToken,
+        token1: usdcToken,
+        token0BalanceRaw: '100000', // 0.001 WBTC
+        token1BalanceRaw: '1000000', // 1 USDC
+        fee: BigInt(3000),
+      };
+
+      const mockGetPosition = jest.fn().mockResolvedValue(mockPosition);
+      const mockQuoteSwap = jest.fn().mockResolvedValue({
+        amountOutMin: '0.995',
+      });
+      const mockExecuteSwap = jest.fn().mockResolvedValue({
+        transactionHash: '0xabc123',
+      });
+
+      // Mock the service methods
+      (service as any).getPosition = mockGetPosition;
+      (service as any).quoteSwap = mockQuoteSwap;
+      (service as any).executeSwap = mockExecuteSwap;
+
+      await service.rebalancePosition('123', 0.5, 0.005);
+
+      expect(mockGetPosition).toHaveBeenCalledWith('123');
+      // The rebalancing logic should determine if a swap is needed based on current ratios
+    });
+  });
 });

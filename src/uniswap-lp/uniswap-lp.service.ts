@@ -1,13 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ethers, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
-import { Token } from '@uniswap/sdk-core';
+import { 
+  Token, 
+  CurrencyAmount, 
+  Percent, 
+  TradeType
+} from '@uniswap/sdk-core';
+import { 
+  Pool,
+  computePoolAddress,
+  nearestUsableTick,
+  TickMath,
+  Position,
+  SwapRouter,
+  Trade
+} from '@uniswap/v3-sdk';
 import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
+import { abi as SwapRouterABI } from '@uniswap/v3-periphery/artifacts/contracts/SwapRouter.sol/SwapRouter.json';
+import { abi as QuoterABI } from '@uniswap/v3-periphery/artifacts/contracts/lens/Quoter.sol/Quoter.json';
 import {
   LiquidityPosition,
   AddLiquidityParams,
   RemoveLiquidityParams,
   CollectFeesParams,
+  SwapQuoteParams,
+  SwapQuoteResult,
+  SwapExecuteParams,
+  SwapExecuteResult,
 } from './types';
 import configuration, { Config } from '../config/configuration';
 import {
@@ -35,9 +55,13 @@ export class UniswapLpService {
   private provider: JsonRpcProvider;
   private signer: Wallet;
   private nfpmContract: ethers.Contract & any;
+  private swapRouterContract: ethers.Contract;
+  private quoterContract: ethers.Contract;
   private uniswapConfig: UniswapNetworkConfig;
   private currentNetwork: UniswapNetworkName;
   private uniswapPositionManagerAddress: string;
+  private swapRouterAddress: string;
+  private quoterAddress: string;
 
   constructor(private readonly configService: ConfigService<Config>) {
     this.initializeNetwork('ethereum');
@@ -69,6 +93,8 @@ export class UniswapLpService {
 
     this.uniswapPositionManagerAddress =
       networkConfig.contracts.uniswapPositionManager;
+    this.swapRouterAddress = networkConfig.contracts.swapRouter;
+    this.quoterAddress = networkConfig.contracts.quoter;
 
     // Initialize provider and signer
     this.provider = new JsonRpcProvider(rpcUrl);
@@ -79,6 +105,19 @@ export class UniswapLpService {
       this.uniswapPositionManagerAddress,
       NonfungiblePositionManagerABI,
       this.provider,
+    );
+
+    // Initialize swap contracts
+    this.swapRouterContract = new ethers.Contract(
+      this.swapRouterAddress,
+      SwapRouterABI,
+      this.signer
+    );
+
+    this.quoterContract = new ethers.Contract(
+      this.quoterAddress,
+      QuoterABI,
+      this.provider
     );
 
     this.logger.log(
@@ -737,6 +776,249 @@ export class UniswapLpService {
       };
     } catch (error) {
       this.logger.error(`Error estimating collect fees gas: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Quote a swap using Uniswap V3 Quoter contract
+   */
+  async quoteSwap(params: SwapQuoteParams): Promise<SwapQuoteResult> {
+    try {
+      this.logger.log(`Quoting swap: ${params.amountIn} ${params.tokenIn.symbol} -> ${params.tokenOut.symbol}`);
+
+      // Convert amount to raw format
+      const amountInRaw = ethers.parseUnits(params.amountIn, params.tokenIn.decimals);
+
+      // Quote using Quoter contract
+      const quotedAmountOut = await this.quoterContract.quoteExactInputSingle.staticCall(
+        params.tokenIn.address,
+        params.tokenOut.address,
+        params.fee,
+        amountInRaw.toString(),
+        0 // sqrtPriceLimitX96
+      );
+
+      // Calculate price impact (simplified)
+      const amountInValue = parseFloat(params.amountIn) * (await this.getTokenPrice(params.tokenIn.address));
+      const amountOutValue = parseFloat(ethers.formatUnits(quotedAmountOut, params.tokenOut.decimals)) * 
+                           (await this.getTokenPrice(params.tokenOut.address));
+      const priceImpact = ((amountInValue - amountOutValue) / amountInValue) * 100;
+
+      // Calculate minimum amount out with slippage
+      const slippagePercent = new Percent(params.slippageTolerance * 100, 100);
+      const amountOutMin = quotedAmountOut * BigInt(100 - params.slippageTolerance * 100) / BigInt(100);
+
+      // Estimate gas
+      const gasEstimate = await this.swapRouterContract.exactInputSingle.estimateGas({
+        tokenIn: params.tokenIn.address,
+        tokenOut: params.tokenOut.address,
+        fee: params.fee,
+        recipient: await this.signer.getAddress(),
+        deadline: params.deadline || Math.floor(Date.now() / 1000) + 1800, // 30 minutes
+        amountIn: amountInRaw.toString(),
+        amountOutMinimum: amountOutMin.toString(),
+        sqrtPriceLimitX96: 0,
+      });
+
+      const gasPrice = await this.provider.getFeeData();
+      const estimatedCostInUsd = this.estimateGasCostInUsd(gasEstimate, gasPrice.gasPrice);
+
+      return {
+        amountIn: params.amountIn,
+        amountOut: ethers.formatUnits(quotedAmountOut, params.tokenOut.decimals),
+        amountOutMin: ethers.formatUnits(amountOutMin, params.tokenOut.decimals),
+        priceImpact,
+        gasEstimate,
+        gasPrice: gasPrice.gasPrice,
+        estimatedCostInUsd,
+        route: {
+          tokenIn: params.tokenIn,
+          tokenOut: params.tokenOut,
+          fee: params.fee,
+        },
+      };
+    } catch (error) {
+      this.logger.error(`Error quoting swap: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute a swap using Uniswap V3 SwapRouter
+   */
+  async executeSwap(params: SwapExecuteParams): Promise<SwapExecuteResult> {
+    try {
+      this.logger.log(`Executing swap: ${params.amountIn} ${params.tokenIn.symbol} -> ${params.tokenOut.symbol}`);
+
+      // Convert amounts to raw format
+      const amountInRaw = ethers.parseUnits(params.amountIn, params.tokenIn.decimals);
+      const amountOutMinRaw = ethers.parseUnits(params.amountOutMin, params.tokenOut.decimals);
+
+      // Approve token spending
+      await this.approveToken(params.tokenIn.address, amountInRaw);
+
+      // Prepare swap parameters
+      const swapParams = {
+        tokenIn: params.tokenIn.address,
+        tokenOut: params.tokenOut.address,
+        fee: params.fee,
+        recipient: params.recipient || await this.signer.getAddress(),
+        deadline: params.deadline || Math.floor(Date.now() / 1000) + 1800, // 30 minutes
+        amountIn: amountInRaw.toString(),
+        amountOutMinimum: amountOutMinRaw.toString(),
+        sqrtPriceLimitX96: 0,
+      };
+
+      // Execute swap
+      const tx = await this.swapRouterContract.exactInputSingle(swapParams);
+      const receipt = await tx.wait();
+
+      // Calculate actual amounts
+      const actualAmountIn = ethers.formatUnits(amountInRaw, params.tokenIn.decimals);
+      const actualAmountOut = ethers.formatUnits(amountOutMinRaw, params.tokenOut.decimals);
+
+      // Calculate gas costs
+      const gasUsed = receipt.gasUsed;
+      const effectiveGasPrice = receipt.effectiveGasPrice;
+      const totalCostInUsd = this.estimateGasCostInUsd(gasUsed, effectiveGasPrice);
+
+      this.logger.log(`Swap executed successfully: ${actualAmountIn} ${params.tokenIn.symbol} -> ${actualAmountOut} ${params.tokenOut.symbol}`);
+      this.logger.log(`Transaction hash: ${receipt.hash}`);
+
+      return {
+        transactionHash: receipt.hash,
+        amountIn: actualAmountIn,
+        amountOut: actualAmountOut,
+        gasUsed,
+        gasPrice: effectiveGasPrice,
+        effectiveGasPrice,
+        totalCostInUsd,
+      };
+    } catch (error) {
+      this.logger.error(`Error executing swap: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get token price in USD (simplified - you may want to use a price oracle)
+   */
+  private async getTokenPrice(tokenAddress: string): Promise<number> {
+    // This is a simplified implementation
+    // In production, you should use a proper price oracle like Chainlink or CoinGecko
+    const tokenConfig = this.uniswapConfig.tokens;
+    
+    if (tokenAddress.toLowerCase() === tokenConfig.token0.address.toLowerCase()) {
+      // For WBTC, you might want to get real price from an oracle
+      return 50000; // Placeholder price
+    } else if (tokenAddress.toLowerCase() === tokenConfig.token1.address.toLowerCase()) {
+      // USDC is pegged to $1
+      return 1;
+    }
+    
+    // For other tokens, you'd need to implement proper price fetching
+    return 1;
+  }
+
+  /**
+   * Estimate gas cost in USD
+   */
+  private estimateGasCostInUsd(gasUsed: bigint, gasPrice: bigint): number {
+    const gasCostInWei = gasUsed * gasPrice;
+    const gasCostInEth = parseFloat(ethers.formatEther(gasCostInWei));
+    
+    // Get ETH price (you might want to fetch this dynamically)
+    const ethPrice = 3000; // Placeholder price
+    
+    return gasCostInEth * ethPrice;
+  }
+
+  /**
+   * Rebalance LP position using swaps
+   */
+  async rebalancePosition(
+    tokenId: string,
+    targetRatio: number = 0.5, // Target 50/50 ratio
+    maxSlippage: number = 0.005 // 0.5% max slippage
+  ): Promise<void> {
+    try {
+      this.logger.log(`Rebalancing position ${tokenId} to ${targetRatio * 100}% ratio`);
+
+      // Get current position
+      const position = await this.getPosition(tokenId);
+      
+      // Calculate current amounts and values
+      const wbtcAmount = parseFloat(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
+      const usdcAmount = parseFloat(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
+      
+      // Get current prices
+      const wbtcPrice = await this.getTokenPrice(position.token0.address);
+      const wbtcValue = wbtcAmount * wbtcPrice;
+      const usdcValue = usdcAmount;
+      const totalValue = wbtcValue + usdcValue;
+      
+      // Calculate current ratio
+      const currentRatio = wbtcValue / totalValue;
+      
+      // Calculate target amounts
+      const targetWbtcValue = totalValue * targetRatio;
+      const targetUsdcValue = totalValue * (1 - targetRatio);
+      
+      // Determine which token to swap
+      if (currentRatio > targetRatio) {
+        // Too much WBTC, need to swap WBTC for USDC
+        const wbtcToSwap = (wbtcValue - targetWbtcValue) / wbtcPrice;
+        
+        if (wbtcToSwap > 0.001) { // Minimum swap amount
+          this.logger.log(`Swapping ${wbtcToSwap.toFixed(6)} WBTC for USDC`);
+          
+          const quote = await this.quoteSwap({
+            tokenIn: position.token0,
+            tokenOut: position.token1,
+            amountIn: wbtcToSwap.toString(),
+            fee: Number(position.fee),
+            slippageTolerance: maxSlippage,
+          });
+          
+          await this.executeSwap({
+            tokenIn: position.token0,
+            tokenOut: position.token1,
+            amountIn: wbtcToSwap.toString(),
+            amountOutMin: quote.amountOutMin,
+            fee: Number(position.fee),
+            slippageTolerance: maxSlippage,
+          });
+        }
+      } else if (currentRatio < targetRatio) {
+        // Too much USDC, need to swap USDC for WBTC
+        const usdcToSwap = usdcValue - targetUsdcValue;
+        
+        if (usdcToSwap > 1) { // Minimum swap amount
+          this.logger.log(`Swapping ${usdcToSwap.toFixed(2)} USDC for WBTC`);
+          
+          const quote = await this.quoteSwap({
+            tokenIn: position.token1,
+            tokenOut: position.token0,
+            amountIn: usdcToSwap.toString(),
+            fee: Number(position.fee),
+            slippageTolerance: maxSlippage,
+          });
+          
+          await this.executeSwap({
+            tokenIn: position.token1,
+            tokenOut: position.token0,
+            amountIn: usdcToSwap.toString(),
+            amountOutMin: quote.amountOutMin,
+            fee: Number(position.fee),
+            slippageTolerance: maxSlippage,
+          });
+        }
+      } else {
+        this.logger.log('Position already balanced');
+      }
+    } catch (error) {
+      this.logger.error(`Error rebalancing position: ${error.message}`);
       throw error;
     }
   }

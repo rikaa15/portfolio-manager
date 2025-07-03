@@ -27,6 +27,8 @@ export interface Config {
     privateKey: string;
     contracts: {
       uniswapPositionManager: string;
+      swapRouter: string;
+      quoter: string;
     };
   };
   sepolia: {
@@ -34,6 +36,8 @@ export interface Config {
     privateKey: string;
     contracts: {
       uniswapPositionManager: string;
+      swapRouter: string;
+      quoter: string;
     };
   };
   base: BaseConfig;
@@ -59,6 +63,8 @@ export default (): Config => ({
     privateKey: process.env.PRIVATE_KEY || '',
     contracts: {
       uniswapPositionManager: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
+      swapRouter: '0xE592427A0AEce92De3Edee1F18E0157C05861564',
+      quoter: '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',
     },
   },
   sepolia: {
@@ -66,6 +72,8 @@ export default (): Config => ({
     privateKey: process.env.PRIVATE_KEY || '',
     contracts: {
       uniswapPositionManager: '0x1238536071E1c677A632429e3655c799b22cDA52',
+      swapRouter: '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E',
+      quoter: '0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',
     },
   },
   base: {
