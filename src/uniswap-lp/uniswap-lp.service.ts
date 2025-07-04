@@ -472,7 +472,7 @@ export class UniswapLpService {
       throw new Error('Could not find token ID in transaction receipt');
     }
 
-    this.logger.log(`Liquidity added successfully. Token ID: ${tokenId}`);
+    this.logger.log(`Liquidity added successfully. Token ID: ${tokenId}, tx hash: ${tx.hash}`);
     return tokenId;
   }
 

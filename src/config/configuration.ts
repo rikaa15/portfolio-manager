@@ -65,8 +65,8 @@ export default (): Config => ({
   },
   lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {
-    positionId: process.env.UNISWAP_POSITION_ID || '1016832',
-    positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-06-25',
+    positionId: process.env.UNISWAP_POSITION_ID || '1025057',
+    positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-07-04',
   },
   aerodrome: {
     poolAddress: process.env.AERODROME_POOL_ADDRESS || '',
