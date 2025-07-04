@@ -911,7 +911,7 @@ export class UniswapLpService {
     
     if (tokenAddress.toLowerCase() === tokenConfig.token0.address.toLowerCase()) {
       // For WBTC, you might want to get real price from an oracle
-      return 50000; // Placeholder price
+      return 107000; // Placeholder price
     } else if (tokenAddress.toLowerCase() === tokenConfig.token1.address.toLowerCase()) {
       // USDC is pegged to $1
       return 1;
@@ -939,81 +939,66 @@ export class UniswapLpService {
    */
   async rebalancePosition(
     tokenId: string,
+    targetValue: number, // Target value of the position in USD
     targetRatio: number = 0.5, // Target 50/50 ratio
     maxSlippage: number = 0.005 // 0.5% max slippage
   ): Promise<void> {
     try {
       this.logger.log(`Rebalancing position ${tokenId} to ${targetRatio * 100}% ratio`);
 
-      // Get current position
       const position = await this.getPosition(tokenId);
-      
-      // Calculate current amounts and values
-      const wbtcAmount = parseFloat(ethers.formatUnits(position.token0BalanceRaw, position.token0.decimals));
-      const usdcAmount = parseFloat(ethers.formatUnits(position.token1BalanceRaw, position.token1.decimals));
       
       // Get current prices
       const wbtcPrice = await this.getTokenPrice(position.token0.address);
-      const wbtcValue = wbtcAmount * wbtcPrice;
-      const usdcValue = usdcAmount;
-      const totalValue = wbtcValue + usdcValue;
-      
-      // Calculate current ratio
-      const currentRatio = wbtcValue / totalValue;
       
       // Calculate target amounts
-      const targetWbtcValue = totalValue * targetRatio;
-      const targetUsdcValue = totalValue * (1 - targetRatio);
+      const targetWbtcValue = targetValue * targetRatio;
+      const targetUsdcValue = targetValue * (1 - targetRatio);
       
-      // Determine which token to swap
-      if (currentRatio > targetRatio) {
-        // Too much WBTC, need to swap WBTC for USDC
-        const wbtcToSwap = (wbtcValue - targetWbtcValue) / wbtcPrice;
+      const wbtcToSwap = targetWbtcValue / wbtcPrice;
         
-        if (wbtcToSwap > 0.001) { // Minimum swap amount
-          this.logger.log(`Swapping ${wbtcToSwap.toFixed(6)} WBTC for USDC`);
-          
-          const quote = await this.quoteSwap({
-            tokenIn: position.token0,
-            tokenOut: position.token1,
-            amountIn: wbtcToSwap.toString(),
-            fee: Number(position.fee),
-            slippageTolerance: maxSlippage,
-          });
-          
-          await this.executeSwap({
-            tokenIn: position.token0,
-            tokenOut: position.token1,
-            amountIn: wbtcToSwap.toString(),
-            amountOutMin: quote.amountOutMin,
-            fee: Number(position.fee),
-            slippageTolerance: maxSlippage,
-          });
-        }
-      } else if (currentRatio < targetRatio) {
-        // Too much USDC, need to swap USDC for WBTC
-        const usdcToSwap = usdcValue - targetUsdcValue;
+      if (wbtcToSwap > 0.0001) { // Minimum swap amount
+        this.logger.log(`Swapping ${wbtcToSwap.toFixed(6)} WBTC for USDC`);
         
-        if (usdcToSwap > 1) { // Minimum swap amount
-          this.logger.log(`Swapping ${usdcToSwap.toFixed(2)} USDC for WBTC`);
-          
-          const quote = await this.quoteSwap({
-            tokenIn: position.token1,
-            tokenOut: position.token0,
-            amountIn: usdcToSwap.toString(),
-            fee: Number(position.fee),
-            slippageTolerance: maxSlippage,
-          });
-          
-          await this.executeSwap({
-            tokenIn: position.token1,
-            tokenOut: position.token0,
-            amountIn: usdcToSwap.toString(),
-            amountOutMin: quote.amountOutMin,
-            fee: Number(position.fee),
-            slippageTolerance: maxSlippage,
-          });
-        }
+        const quote = await this.quoteSwap({
+          tokenIn: position.token0,
+          tokenOut: position.token1,
+          amountIn: wbtcToSwap.toString(),
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
+
+        this.logger.log(`Quote: ${quote}`);
+        
+        await this.executeSwap({
+          tokenIn: position.token0,
+          tokenOut: position.token1,
+          amountIn: wbtcToSwap.toString(),
+          amountOutMin: quote.amountOutMin,
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
+      } else if(targetUsdcValue > 10) {
+        this.logger.log(`Swapping ${targetUsdcValue.toFixed(6)} USDC for WBTC`);
+  
+        const quote = await this.quoteSwap({
+          tokenIn: position.token1,
+          tokenOut: position.token0,
+          amountIn: targetUsdcValue.toString(),
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
+
+        this.logger.log(`Quote`, quote);
+
+        await this.executeSwap({
+          tokenIn: position.token1,
+          tokenOut: position.token0,
+          amountIn: targetUsdcValue.toString(),
+          amountOutMin: quote.amountOutMin,
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
       } else {
         this.logger.log('Position already balanced');
       }
