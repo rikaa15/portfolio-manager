@@ -132,6 +132,7 @@ export class AppService {
         await this.checkLpRebalancing(currentPrice, position);
       } catch (error) {
         this.logger.error(`Error checking LP rebalancing: ${error.message}`);
+        throw error;
       }
 
       // Calculate impermanent loss
