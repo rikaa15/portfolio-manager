@@ -651,7 +651,7 @@ export class AppService {
     }
 
     // test
-    await this.uniswapLpService.rebalancePosition(this.POSITION_ID, 20, 0.5, 0.005);
+    // await this.uniswapLpService.rebalancePosition(this.POSITION_ID, 20, 0.5, 0.005);
 
     if(isLiquidityZero) {
       rebalancingNeeded = true;
