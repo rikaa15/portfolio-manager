@@ -934,6 +934,16 @@ export class UniswapLpService {
     return gasCostInEth * ethPrice;
   }
 
+  private getTokenBalance(tokenAddress: string): Promise<number> {
+    const tokenContract = new ethers.Contract(
+      tokenAddress,
+      [...ERC20_ABI, 'function decimals() external view returns (uint8)'],
+      this.signer,
+    );
+
+    return tokenContract.balanceOf(this.signer.getAddress());
+  }
+
   /**
    * Rebalance LP position using swaps
    */
@@ -947,7 +957,9 @@ export class UniswapLpService {
       this.logger.log(`Rebalancing position ${tokenId} to ${targetRatio * 100}% ratio`);
 
       const position = await this.getPosition(tokenId);
-      
+      const wbtcBalance = await this.getTokenBalance(position.token0.address);
+      const usdcBalance = await this.getTokenBalance(position.token1.address);
+
       // Get current prices
       const wbtcPrice = await this.getTokenPrice(position.token0.address);
       
@@ -955,9 +967,31 @@ export class UniswapLpService {
       const targetWbtcValue = targetValue * targetRatio;
       const targetUsdcValue = targetValue * (1 - targetRatio);
       
-      const wbtcToSwap = targetWbtcValue / wbtcPrice;
-        
-      if (wbtcToSwap > 0.0001) { // Minimum swap amount
+      const targetWbtcAmount = targetWbtcValue / wbtcPrice;
+      const targetUsdcAmount = targetUsdcValue / 1;
+
+      const wbtcToSwap = targetWbtcAmount > 0
+        ? Math.max(0, targetWbtcAmount - parseFloat(formatUnits(wbtcBalance, position.token0.decimals)))
+        : 0;
+      const usdcToSwap = targetUsdcAmount > 0
+        ? Math.max(0, targetUsdcAmount - parseFloat(formatUnits(usdcBalance, position.token1.decimals)))
+        : 0;
+
+      this.logger.log(`Target WBTC Amount: ${
+        targetWbtcAmount
+      }, WBTC To Swap: ${
+        wbtcToSwap
+      }, WBTC wallet balance: ${
+        formatUnits(wbtcBalance, position.token0.decimals)
+      }, Target USDC Amount: ${
+        targetUsdcAmount
+      }, USDC To Swap: ${
+        usdcToSwap
+      }, USDC wallet balance: ${
+        formatUnits(usdcBalance, position.token1.decimals)
+      }`);
+
+      if (wbtcToSwap > 0) {
         this.logger.log(`Swapping ${wbtcToSwap.toFixed(6)} WBTC for USDC`);
         
         const quote = await this.quoteSwap({
@@ -969,6 +1003,7 @@ export class UniswapLpService {
         });
 
         this.logger.log(`Quote: ${quote}`);
+        return
         
         await this.executeSwap({
           tokenIn: position.token0,
@@ -978,7 +1013,9 @@ export class UniswapLpService {
           fee: Number(position.fee),
           slippageTolerance: maxSlippage,
         });
-      } else if(targetUsdcValue > 10) {
+      }
+
+      if(usdcToSwap > 0) {
         this.logger.log(`Swapping ${targetUsdcValue.toFixed(6)} USDC for WBTC`);
   
         const quote = await this.quoteSwap({
@@ -990,6 +1027,7 @@ export class UniswapLpService {
         });
 
         this.logger.log(`Quote`, quote);
+        return
 
         await this.executeSwap({
           tokenIn: position.token1,
