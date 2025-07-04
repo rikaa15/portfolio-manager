@@ -23,6 +23,8 @@ export interface Config {
   strategy: {
     lpRebalanceEnabled: boolean;
     hedgeEnabled: boolean;
+    lpTargetPositionValue: number;
+    lpRebalanceRange: number;
   };
   uniswap: {
     positionId: string;
@@ -62,6 +64,8 @@ export default (): Config => ({
   strategy: {
     lpRebalanceEnabled: getBooleanEnv('LP_REBALANCING_ENABLED', true),
     hedgeEnabled: getBooleanEnv('HEDGE_ENABLED', false),
+    lpTargetPositionValue: parseFloat(process.env.LP_TARGET_POSITION_VALUE || '30'),
+    lpRebalanceRange: parseFloat(process.env.LP_REBALANCE_RANGE || '0.05'),
   },
   lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {

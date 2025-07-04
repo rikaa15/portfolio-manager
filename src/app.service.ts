@@ -53,9 +53,6 @@ export class AppService {
 
   // LP Rebalancing state
   private lastLpRebalance = 0;
-  // TODO: move to config
-  private readonly LP_TARGET_POSITION_VALUE = 30 // $ amount of WBTC in LP position
-  private readonly LP_REBALANCE_RANGE = 0.05; // 5% range
 
   constructor(
     private readonly uniswapLpService: UniswapLpService,
@@ -666,6 +663,8 @@ export class AppService {
 
   private async executeLpRebalancing(currentPrice: number, action: string) {
     this.logger.log(`Executing LP rebalancing: ${action}`);
+
+    const { lpTargetPositionValue, lpRebalanceRange } =  this.configService.get('strategy');
     
     // Get current position
     const position = await this.uniswapLpService.getPosition(this.POSITION_ID);
@@ -675,8 +674,8 @@ export class AppService {
     const upperPrice = 1.0001 ** Number(position.tickUpper) * Math.pow(10, tokensDecimalsDelta);
     
     // Calculate new price range
-    const newLowerPrice = currentPrice * (1 - this.LP_REBALANCE_RANGE / 2);
-    const newUpperPrice = currentPrice * (1 + this.LP_REBALANCE_RANGE / 2);
+    const newLowerPrice = currentPrice * (1 - lpRebalanceRange / 2);
+    const newUpperPrice = currentPrice * (1 + lpRebalanceRange / 2);
     
     // Convert prices to ticks
     const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
@@ -711,8 +710,8 @@ export class AppService {
     }
 
     // Calculate new liquidity amounts based on target position value
-    const targetWbtcValue = this.LP_TARGET_POSITION_VALUE / 2;
-    const targetUsdcValue = this.LP_TARGET_POSITION_VALUE / 2;
+    const targetWbtcValue = lpTargetPositionValue / 2;
+    const targetUsdcValue = lpTargetPositionValue / 2;
     
     const newWbtcAmount = targetWbtcValue / currentPrice;
     const newUsdcAmount = targetUsdcValue;
