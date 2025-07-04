@@ -1,5 +1,11 @@
 import 'dotenv/config';
 
+function getBooleanEnv(key: string, defaultValue: boolean): boolean {
+  return typeof process.env[key] === 'string'
+  ? process.env[key] === 'true'
+  : defaultValue;
+}
+
 export interface BaseConfig {
   rpcUrl: string;
   chainId: number;
@@ -14,6 +20,10 @@ export interface Config {
   port: number;
   walletAddress: string;
   lpProvider: 'uniswap' | 'aerodrome';
+  strategy: {
+    lpRebalanceEnabled: boolean;
+    hedgeEnabled: boolean;
+  };
   uniswap: {
     positionId: string;
     positionCreationDate: string;
@@ -49,6 +59,10 @@ export interface Config {
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
+  strategy: {
+    lpRebalanceEnabled: getBooleanEnv('LP_REBALANCING_ENABLED', true),
+    hedgeEnabled: getBooleanEnv('HEDGE_ENABLED', false),
+  },
   lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1016832',

@@ -126,13 +126,20 @@ export class AppService {
       const currentPrice = poolPriceHistory[poolPriceHistory.length - 1].token1Price;
       this.logger.log(`BTC price (initial): ${initialPrice}, current: ${currentPrice}`);
 
-      // Check if LP position needs rebalancing based on price position
-      try {
-        this.logger.log('Checking LP rebalancing...');
-        await this.checkLpRebalancing(currentPrice, position);
-      } catch (error) {
-        this.logger.error(`Error checking LP rebalancing: ${error.message}`);
-        throw error;
+      if(this.configService.get('strategy').lpRebalanceEnabled) {
+        // Check if LP position needs rebalancing based on price position
+        try {
+          this.logger.log('Checking LP rebalancing...');
+          await this.checkLpRebalancing(currentPrice, position);
+        } catch (error) {
+          this.logger.error(`Error checking LP rebalancing: ${error.message}`);
+          throw error;
+        }
+      }
+
+      if(!this.configService.get('strategy').hedgeEnabled) {
+        this.logger.log('Hedge is disabled, skipping...');
+        return;
       }
 
       // Calculate impermanent loss
