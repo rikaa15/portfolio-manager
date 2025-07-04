@@ -15,7 +15,9 @@ export function getPositionTickRange(
       return {
         tickLower: -887272,
         tickUpper: 887272,
-        positionType: 'full-range',
+        rangeWidth: Infinity,
+        priceLower: 0,
+        priceUpper: Infinity,
       };
 
     case '10%':
@@ -24,7 +26,9 @@ export function getPositionTickRange(
       return {
         tickLower: currentTick - range10,
         tickUpper: currentTick + range10,
-        positionType: '10%',
+        rangeWidth: 0.1,
+        priceLower: 0, // Will be calculated based on current price
+        priceUpper: 0, // Will be calculated based on current price
       };
 
     case '20%':
@@ -33,7 +37,9 @@ export function getPositionTickRange(
       return {
         tickLower: currentTick - range20,
         tickUpper: currentTick + range20,
-        positionType: '20%',
+        rangeWidth: 0.2,
+        priceLower: 0, // Will be calculated based on current price
+        priceUpper: 0, // Will be calculated based on current price
       };
 
     case '30%':
@@ -42,13 +48,27 @@ export function getPositionTickRange(
       return {
         tickLower: currentTick - range30,
         tickUpper: currentTick + range30,
-        positionType: '30%',
+        rangeWidth: 0.3,
+        priceLower: 0, // Will be calculated based on current price
+        priceUpper: 0, // Will be calculated based on current price
       };
 
     default:
       throw new Error(`Unsupported position type: ${positionType}`);
   }
 }
+
+export const logger = {
+  log: (message: string) => {
+    process.stdout.write(message + '\n');
+  },
+  warn: (message: string) => {
+    process.stdout.write(message + '\n');
+  },
+  error: (message: string) => {
+    process.stderr.write(message + '\n');
+  },
+};
 
 /**
  * Check if position is active (earning fees) at current tick
@@ -60,6 +80,15 @@ export function isPositionActive(
   return (
     currentTick >= positionRange.tickLower &&
     currentTick < positionRange.tickUpper
+  );
+}
+
+/**
+ * Check if a position type is full-range based on rangeWidth
+ */
+export function isFullRange(positionRange: PositionRange): boolean {
+  return (
+    positionRange.rangeWidth === Infinity || positionRange.rangeWidth >= 100
   );
 }
 
@@ -129,7 +158,7 @@ export function calculatePositionFees(
   }
 
   // For full-range: use the simple, proven approach
-  if (positionRange.positionType === 'full-range') {
+  if (isFullRange(positionRange)) {
     const liquidityDistribution = calculateActiveLiquidityDistribution(
       allPositions,
       currentTick,

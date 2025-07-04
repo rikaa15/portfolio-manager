@@ -74,6 +74,11 @@ export interface PoolDayData {
   token1Price: string;
   tick: string;
   liquidity: string;
+  feeGrowthGlobal0X128: string;
+  feeGrowthGlobal1X128: string;
+  high: string;
+  low: string;
+  sqrtPrice: string;
 }
 
 export interface Position {
@@ -87,7 +92,10 @@ export interface Position {
 export interface PositionRange {
   tickLower: number;
   tickUpper: number;
-  positionType: string;
+  // positionType: string;
+  rangeWidth: number;
+  priceLower: number;
+  priceUpper: number;
 }
 
 export interface TickData {
@@ -98,3 +106,19 @@ export interface TickData {
   feeGrowthOutside1X128: string;
   feesUSD: string;
 }
+
+export interface PoolTestConfig {
+  poolName: string;
+  poolAddress: string;
+  token0Symbol: string;
+  token1Symbol: string;
+  token0Decimals: number;
+  token1Decimals: number;
+  tickSpacing: number;
+  initialAmount: number;
+  positionType: PositionType;
+  startDate: string;
+  endDate: string;
+}
+
+export type PositionType = 'full-range' | `${number}%`;

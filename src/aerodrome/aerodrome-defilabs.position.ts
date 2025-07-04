@@ -4,8 +4,12 @@ import { PoolDayData, PositionRange, PositionType } from './types';
 /**
  * Aerodrome Position class for BTC/stablecoin pairs
  * Based on Defilabs implementation https://github.com/DefiLab-xyz/uniswap-v3-backtest/blob/main/backtest.mjs
+ *
+ * - token0 = USDC (6 decimals) - matches actual pool structure
+ * - token1 = cbBTC (8 decimals) - matches actual pool structure
+ * - token0Price = BTC price in USD (from subgraph)
  */
-export class AerodromePosition {
+export class AerodromeSwapDecimalsPosition {
   private initialAmount: number;
   private currentPositionCapital: number;
   private positionType: PositionType;
@@ -42,15 +46,19 @@ export class AerodromePosition {
   private liquidityAmount: number = 0;
   private totalPoolLiquidity: number;
 
-  // Token decimals for BTC/stablecoin
-  private readonly token0Decimals: number;
-  private readonly token1Decimals: number;
+  // Added poolTVL for full-range liquidity calculation
+  private poolTVL: number;
+
+  // Token decimals now match actual pool structure
+  private readonly token0Decimals: number; // USDC (actual token0)
+  private readonly token1Decimals: number; // cbBTC (actual token1)
 
   private dailyActiveFactors: number[] = [];
   private currentTick: number = 0;
 
-  private btcAmount: number = 0;
-  private stablecoinAmount: number = 0;
+  // Logical naming aligned with economic meaning
+  private usdcAmount: number = 0; // token0 amount (USDC)
+  private btcAmount: number = 0; // token1 amount (cbBTC)
 
   constructor(
     initialAmount: number,
@@ -61,8 +69,8 @@ export class AerodromePosition {
     initialToken1Price: number, // Not used but kept for compatibility
     totalPoolLiquidity: number,
     tickSpacing: number = 2000,
-    token0Decimals: number = 8, // cbBTC (match btcAmount)
-    token1Decimals: number = 6, // USDC (match stablecoinAmount)
+    token0Decimals: number = 6, // USDC (actual token0)
+    token1Decimals: number = 8, // cbBTC (actual token1)
   ) {
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
@@ -75,14 +83,17 @@ export class AerodromePosition {
 
     this.token0Decimals = token0Decimals;
     this.token1Decimals = token1Decimals;
-    // this.lpSharePercentage = initialAmount / initialTvl;
+
+    this.poolTVL = initialTvl;
+
     // Calculate position range
     this.positionRange = this.getPositionTickRange(
       initialTick,
       positionType,
       tickSpacing,
     );
-    // Simple token allocation in USD terms
+
+    // Calculate token allocation and liquidity
     this.calculateTokensAndLiquidity(initialAmount, initialBtcPrice);
   }
 
@@ -123,13 +134,6 @@ export class AerodromePosition {
       Math.ceil(rawTickUpper / tickSpacing) * tickSpacing,
     );
 
-    logger.log(`[DEBUG] Position range calculation:`);
-    logger.log(`[DEBUG] - Position type: ${positionType}`);
-    logger.log(
-      `[DEBUG] - BTC price range: $${priceLower.toLocaleString()} to $${priceUpper.toLocaleString()}`,
-    );
-    logger.log(`[DEBUG] - Tick range: ${tickLower} to ${tickUpper}`);
-
     return {
       tickLower,
       tickUpper,
@@ -139,7 +143,6 @@ export class AerodromePosition {
     };
   }
 
-  // Simplified token and liquidity calculation
   private calculateTokensAndLiquidity(
     investment: number,
     btcPrice: number,
@@ -149,24 +152,25 @@ export class AerodromePosition {
       const usdInBtc = investment / 2;
       const usdInStablecoin = investment / 2;
 
-      this.btcAmount = usdInBtc / btcPrice; // BTC amount
-      this.stablecoinAmount = usdInStablecoin; // Stablecoin amount
+      this.usdcAmount = usdInStablecoin; // token0 amount (USDC)
+      this.btcAmount = usdInBtc / btcPrice; // token1 amount (cbBTC)
 
-      // Use reasonable bounds for liquidity calculation
-      const lowPrice = btcPrice * 0.01; // 1% of current price
-      const highPrice = btcPrice * 100; // 100x current price
+      // Use Defilab method for full-range (not TVL proportion)
+      // Use very wide range to simulate "full-range" mathematically
+      const veryLowPrice = btcPrice * 0.01; // 1% of current price
+      const veryHighPrice = btcPrice * 100; // 100x current price
 
       this.liquidityAmount = this.liquidityForStrategy(
         btcPrice,
-        lowPrice,
-        highPrice,
+        veryLowPrice,
+        veryHighPrice,
         this.btcAmount,
-        this.stablecoinAmount,
+        this.usdcAmount,
       );
     } else {
       // Use Defilab method for concentrated positions
-      const decimal = this.token1Decimals - this.token0Decimals; // 6 - 8 = -2
-      [this.btcAmount, this.stablecoinAmount] = this.tokensForStrategy(
+      const decimal = this.token0Decimals - this.token1Decimals; // 6 - 8 = -2
+      [this.btcAmount, this.usdcAmount] = this.tokensForStrategy(
         this.positionRange.priceLower,
         this.positionRange.priceUpper,
         investment,
@@ -179,7 +183,7 @@ export class AerodromePosition {
         this.positionRange.priceLower,
         this.positionRange.priceUpper,
         this.btcAmount,
-        this.stablecoinAmount,
+        this.usdcAmount,
       );
     }
 
@@ -188,34 +192,16 @@ export class AerodromePosition {
 
   /**
    * Defilab tokensForStrategy implementation
-   *
-   * PURPOSE: Calculate the optimal token amounts (token0 and token1) needed to deploy
-   * a given USD investment into a concentrated liquidity position within a specific price range.
-   *
-   * UNISWAP V3 MATH BACKGROUND:
-   * - In Uniswap V3, liquidity positions are defined by price ranges [priceLow, priceHigh]
-   * - The ratio of token0:token1 depends on where the current price sits within this range
-   * - If price is at the center: roughly 50/50 split
-   * - If price is near upper bound: mostly token1 (higher-value token)
-   * - If price is near lower bound: mostly token0 (lower-value token)
-   * - If price is outside range: 100% of one token, 0% of the other
-   *
-   * WHY SQRT PRICES?
-   * - Uniswap V3 uses square root prices internally for mathematical efficiency
-   * - This allows for constant product formula: x * y = k to work with concentrated liquidity
-   * - sqrt(price) represents the "exchange rate" between tokens in Uniswap's internal math
    */
   private tokensForStrategy(
     minRange: number, // Lower price bound of the position (e.g., $100,000)
     maxRange: number, // Upper price bound of the position (e.g., $110,000)
     investment: number, // Total USD to invest (e.g., $1000)
     price: number, // Current market price (e.g., $105,000)
-    decimal: number, // Decimal adjustment (token1Decimals - token0Decimals)
+    decimal: number, // Decimal adjustment (token0Decimals - token1Decimals = 6 - 8 = -2)
   ): [number, number] {
-    // Returns [amount0, amount1] in token units
-
+    // Returns [usdcAmount, btcAmount] in token units
     // STEP 1: Convert prices to sqrt format with decimal adjustment
-    // The decimal adjustment accounts for different token decimal places (e.g., USDC=6, cbBTC=8)
     const sqrtPrice = Math.sqrt(price * Math.pow(10, decimal));
     const sqrtLow = Math.sqrt(minRange * Math.pow(10, decimal));
     const sqrtHigh = Math.sqrt(maxRange * Math.pow(10, decimal));
@@ -223,96 +209,48 @@ export class AerodromePosition {
     let delta: number, amount0: number, amount1: number;
 
     // CASE 1: CURRENT PRICE IS WITHIN THE RANGE (most common case)
-    // When price is between minRange and maxRange, we need both tokens
     if (sqrtPrice > sqrtLow && sqrtPrice < sqrtHigh) {
-      // Calculate the "delta" - this is the liquidity scaling factor
-      // The denominator represents the total USD value needed for 1 unit of liquidity:
-      // - (sqrtPrice - sqrtLow): USD value in token1 for 1 unit of liquidity
-      // - (1/sqrtPrice - 1/sqrtHigh) * price * 10^decimal: USD value in token0 for 1 unit of liquidity
       delta =
         investment /
         (sqrtPrice -
           sqrtLow +
           (1 / sqrtPrice - 1 / sqrtHigh) * (price * Math.pow(10, decimal)));
 
-      // Calculate token amounts by multiplying delta by the respective components
-      amount1 = delta * (sqrtPrice - sqrtLow); // token1 amount (higher-value token, e.g., cbBTC)
-      amount0 = delta * (1 / sqrtPrice - 1 / sqrtHigh) * Math.pow(10, decimal); // token0 amount (lower-value token, e.g., USDC)
+      amount0 = delta * (1 / sqrtPrice - 1 / sqrtHigh) * Math.pow(10, decimal); // USDC amount (token0)
+      amount1 = delta * (sqrtPrice - sqrtLow); // cbBTC amount (token1)
 
       // CASE 2: CURRENT PRICE IS BELOW THE RANGE
-      // When price < minRange, position will be 100% token0, 0% token1
-      // This happens when market price is lower than our position's lower bound
     } else if (sqrtPrice < sqrtLow) {
-      // All investment goes into token0 since price is below our range
       delta = investment / ((1 / sqrtLow - 1 / sqrtHigh) * price);
-      amount1 = 0; // No token1 needed
-      amount0 = delta * (1 / sqrtLow - 1 / sqrtHigh); // All investment in token0
+      amount0 = delta * (1 / sqrtLow - 1 / sqrtHigh); // All investment in USDC
+      amount1 = 0; // No cbBTC needed
 
       // CASE 3: CURRENT PRICE IS ABOVE THE RANGE
-      // When price > maxRange, position will be 100% token1, 0% token0
-      // This happens when market price is higher than our position's upper bound
     } else {
-      // All investment goes into token1 since price is above our range
       delta = investment / (sqrtHigh - sqrtLow);
-      amount1 = delta * (sqrtHigh - sqrtLow); // All investment in token1
-      amount0 = 0; // No token0 needed
+      amount0 = 0; // No USDC needed
+      amount1 = delta * (sqrtHigh - sqrtLow); // All investment in cbBTC
     }
-
     return [amount0, amount1];
   }
 
   /**
    * Defilab liquidityForStrategy implementation
-   *
-   * PURPOSE: Calculate the amount of liquidity units that can be created with given token amounts
-   * within a specific price range. This is the KEY METHOD that determines fee earning power.
-   *
-   * 🎯 CRITICAL INSIGHT - CONCENTRATION EFFECT:
-   * This method is WHY concentrated positions earn more fees:
-   * - SAME token amounts + NARROWER price range = MORE liquidity units
-   * - MORE liquidity units = MORE fees (fees = feeGrowth × liquidityAmount)
-   *
-   * CONCENTRATION EXAMPLES (with same $1000 investment):
-   * - 5% range:  1,237,721,726 liquidity units → 30.97% APR (high concentration)
-   * - 10% range:   622,348,943 liquidity units → 8.81% APR (medium concentration)
-   * - 20% range:   ~311,174,471 liquidity units → ~4.4% APR (low concentration)
-   *
-   * WHY DOES NARROWER RANGE = MORE LIQUIDITY?
-   * Mathematical: Liquidity = tokens / price_range_factor
-   * - Smaller price range → smaller denominator → higher liquidity
-   * - Think "liquidity density": same tokens spread over smaller area = higher density
-   *
-   * UNISWAP V3 LIQUIDITY MATH BACKGROUND:
-   * - Liquidity (L) represents the amount of "virtual tokens" available for swapping
-   * - Higher liquidity = more tokens available = lower slippage for swaps
-   * - The relationship between token amounts and liquidity depends on the price range
-   * - Liquidity is calculated differently based on where current price sits relative to the range
-   *
-   * WHY 2^96?
-   * - Uniswap V3 uses Q96 fixed-point arithmetic for precision
-   * - 2^96 is a scaling factor that allows fractional numbers to be represented as integers
-   * - This prevents precision loss in smart contract calculations
-   *
-   * LIQUIDITY FORMULA LOGIC:
-   * - If price below range: L = Δx / ((1/√Pa - 1/√Pb) * 10^decimals0)
-   * - If price above range: L = Δy / ((√Pb - √Pa) * 10^decimals1)
-   * - If price in range: L = min(L_from_x, L_from_y) - use limiting factor
+   * Now properly handles token0=USDC, token1=cbBTC
    */
   private liquidityForStrategy(
     price: number, // Current market price
     low: number, // Lower price bound of position
     high: number, // Upper price bound of position
-    tokens0: number, // Available amount of token0 (lower-value token)
-    tokens1: number, // Available amount of token1 (higher-value token)
+    tokens0: number, // Available amount of token0 (USDC)
+    tokens1: number, // Available amount of token1 (cbBTC)
   ): number {
     // Returns liquidity units
 
-    // STEP 1: Calculate decimal adjustment (same as in tokensForStrategy)
-    const decimal = this.token1Decimals - this.token0Decimals;
+    // STEP 1: Calculate decimal adjustment
+    const decimal = this.token0Decimals - this.token1Decimals; // 6 - 8 = -2
 
     // STEP 2: Convert price bounds to Uniswap's Q96 format
-    // Q96 format: sqrt(price * 10^decimal) * 2^96
-    // This gives us the internal representation Uniswap uses for calculations
     const lowHigh = [
       Math.sqrt(low * Math.pow(10, decimal)) * Math.pow(2, 96), // Lower bound in Q96
       Math.sqrt(high * Math.pow(10, decimal)) * Math.pow(2, 96), // Upper bound in Q96
@@ -326,67 +264,49 @@ export class AerodromePosition {
     const sHigh = Math.max(...lowHigh);
 
     // CASE 1: CURRENT PRICE IS BELOW THE RANGE
-    // When price <= low bound, all liquidity comes from token0
-    // Formula: L = token0_amount / ((2^96 * (√Ph - √Pl)) / (√Ph * √Pl) / 10^decimals0)
     if (sPrice <= sLow) {
       return (
         tokens0 /
-        ((Math.pow(2, 96) * (sHigh - sLow)) / // Q96 price range difference
-          sHigh / // Divide by upper bound
-          sLow / // Divide by lower bound
-          Math.pow(10, this.token0Decimals)) // Adjust for token0 decimals
+        ((Math.pow(2, 96) * (sHigh - sLow)) /
+          sHigh /
+          sLow /
+          Math.pow(10, this.token0Decimals)) // USDC decimals
       );
 
       // CASE 2: CURRENT PRICE IS WITHIN THE RANGE
-      // When low < price < high, we need to check both tokens and use the limiting factor
-      // 🔥 THIS IS WHERE CONCENTRATION MAGIC HAPPENS:
-      // - Narrower range (5%) → smaller (sHigh - sPrice) and (sPrice - sLow) → LARGER liquidity
-      // - Wider range (20%) → larger (sHigh - sPrice) and (sPrice - sLow) → smaller liquidity
-      // Same tokens ÷ smaller range factor = MORE liquidity units = MORE fees!
     } else if (sPrice <= sHigh && sPrice > sLow) {
-      // Calculate liquidity that can be provided by available token0
-      // 💡 Notice: smaller (sHigh - sPrice) denominator = higher liquidity
+      // Calculate liquidity from USDC (token0)
       const liq0 =
         tokens0 /
-        ((Math.pow(2, 96) * (sHigh - sPrice)) / // 🎯 CONCENTRATION FACTOR: smaller range = smaller denominator
-          sHigh / // Divide by upper bound
-          sPrice / // Divide by current price
-          Math.pow(10, this.token0Decimals)); // Adjust for token0 decimals
+        ((Math.pow(2, 96) * (sHigh - sPrice)) /
+          sHigh /
+          sPrice /
+          Math.pow(10, this.token1Decimals)); // USDC decimals
 
-      // Calculate liquidity that can be provided by available token1
-      // 💡 Notice: smaller (sPrice - sLow) denominator = higher liquidity
+      // Calculate liquidity from cbBTC (token1)
       const liq1 =
         tokens1 /
-        ((sPrice - sLow) / // 🎯 CONCENTRATION FACTOR: smaller range = smaller denominator
-          Math.pow(2, 96) / // Convert from Q96
-          Math.pow(10, this.token1Decimals)); // Adjust for token1 decimals
+        ((sPrice - sLow) / Math.pow(2, 96) / Math.pow(10, this.token1Decimals)); // cbBTC decimals
 
-      // The actual liquidity is limited by whichever token we have less of
-      // This ensures we don't try to provide more liquidity than our token balances allow
-      // 🚀 RESULT: Concentrated positions get MUCH higher liquidity values here!
       return Math.min(liq1, liq0);
 
       // CASE 3: CURRENT PRICE IS ABOVE THE RANGE
-      // When price >= high bound, all liquidity comes from token1
-      // Formula: L = token1_amount / ((√Ph - √Pl) / 2^96 / 10^decimals1)
     } else {
       return (
         tokens1 /
-        ((sHigh - sLow) / // Q96 price range difference
-          Math.pow(2, 96) / // Convert from Q96
-          Math.pow(10, this.token1Decimals)) // Adjust for token1 decimals
+        ((sHigh - sLow) / Math.pow(2, 96) / Math.pow(10, this.token0Decimals)) // cbBTC decimals
       );
     }
   }
 
   /**
-   * Position value calculation (always USD)
+   * Position value calculation
    */
   getCurrentPositionValue(): number {
-    // USD calculation
-    const btcValueInUsd = this.btcAmount * this.currentBtcPrice;
-    const stablecoinValueInUsd = this.stablecoinAmount;
-    const totalValue = btcValueInUsd + stablecoinValueInUsd;
+    // Calculate USD value: USDC + (cbBTC * BTC_price)
+    const usdcValueInUsd = this.usdcAmount; // USDC is already in USD
+    const btcValueInUsd = this.btcAmount * this.currentBtcPrice; // cbBTC * price
+    const totalValue = usdcValueInUsd + btcValueInUsd;
     return totalValue;
   }
 
@@ -410,7 +330,7 @@ export class AerodromePosition {
       this.daysInRange++;
     }
 
-    // Calculate active liquidity (simplified for full-range)
+    // Calculate active liquidity
     const activeLiquidityPercent =
       this.calculateActiveLiquidityForCandle(dayData);
     this.dailyActiveFactors.push(activeLiquidityPercent);
@@ -435,95 +355,38 @@ export class AerodromePosition {
   }
 
   /**
-   * Enhanced activeLiquidityForCandle implementation
-   *
-   * BASED ON: Defilab's activeLiquidityForCandle(min, max, low, high) function
-   * ENHANCED FOR: Daily backtesting with real market data and position type awareness
-   *
-   * WHY IS THIS NEEDED?
-   * - During a single day, BTC price moves up and down within a range (dayData.low to dayData.high)
-   * - Your position has a fixed range (e.g., $100k to $110k for a 10% position)
-   * - You only earn fees when the market price range OVERLAPS with your position range
-   * - This method calculates what % of the day's price action was within your range
-   *
-   * EXAMPLE SCENARIOS:
-   *
-   * Scenario 1 - Perfect Overlap (100% active):
-   * Day's price range:     $102k ████████████ $108k
-   * Your position range:   $100k ████████████████ $110k
-   * Result: 100% active (all day's trading was in your range)
-   *
-   * Scenario 2 - Partial Overlap (50% active):
-   * Day's price range:     $105k ████████████ $115k
-   * Your position range:   $100k ████████████████ $110k
-   * Overlap:               $105k ████████ $110k
-   * Result: 50% active (half the day's range overlapped)
-   *
-   * Scenario 3 - No Overlap (0% active):
-   * Day's price range:     $90k ████████████ $95k
-   * Your position range:   $100k ████████████████ $110k
-   * Result: 0% active (no overlap = no fees earned)
-   *
-   * MATH EXPLANATION:
-   * Active % = (Overlapping Range) / (Total Day Range) × 100
-   * Where Overlapping Range = min(your_upper, day_high) - max(your_lower, day_low)
+   * Active liquidity calculation
    */
   private calculateActiveLiquidityForCandle(dayData: PoolDayData): number {
-    // CASE 1: FULL-RANGE POSITIONS
-    // Full-range positions cover the entire possible price spectrum (-∞ to +∞)
-    // They are ALWAYS active regardless of price movement
     if (this.positionType === 'full-range') {
       return 100; // Always 100% active = always earning fees
     }
 
-    // CASE 2: CONCENTRATED POSITIONS
-    // These have specific price bounds and may go in/out of range
+    const low = parseFloat(dayData.low || dayData.token0Price);
+    const high = parseFloat(dayData.high || dayData.token0Price);
 
-    // STEP 1: Get the day's price range (low to high)
-    // Note: Fallback to current price if high/low data is missing
-    const low = parseFloat(dayData.low || dayData.token0Price); // Lowest price during the day
-    const high = parseFloat(dayData.high || dayData.token0Price); // Highest price during the day
-
-    // STEP 2: Validate price data
-    // Ensure we have valid, positive price data to work with
     if (!isFinite(low) || !isFinite(high) || low <= 0 || high <= 0) {
-      return 0; // Invalid data = assume 0% active (conservative approach)
+      return 0;
     }
 
-    // STEP 3: Convert prices to ticks for precise range calculations
-    // Ticks are Uniswap's internal price representation (more precise than USD prices)
-    const lowTick = this.getTickFromPrice(low); // Day's lowest price in tick format
-    const highTick = this.getTickFromPrice(high); // Day's highest price in tick format
+    const lowTick = this.getTickFromPrice(low);
+    const highTick = this.getTickFromPrice(high);
 
-    // Get our position's tick range bounds
-    const minTick = this.positionRange.tickLower; // Our position's lower bound (e.g., $100k → tick)
-    const maxTick = this.positionRange.tickUpper; // Our position's upper bound (e.g., $110k → tick)
+    const minTick = this.positionRange.tickLower;
+    const maxTick = this.positionRange.tickUpper;
 
-    // STEP 4: Calculate overlap using tick math
-
-    // Total day range in ticks (prevent division by zero)
     const divider = highTick - lowTick !== 0 ? highTick - lowTick : 1;
-
-    // Calculate overlapping range: intersection of [day_range] and [position_range]
-    // Math.min(maxTick, highTick) = upper bound of overlap
-    // Math.max(minTick, lowTick) = lower bound of overlap
-    // Overlap size = upper_bound - lower_bound
     const ratioTrue =
       highTick - lowTick !== 0
         ? (Math.min(maxTick, highTick) - Math.max(minTick, lowTick)) / divider
-        : 1; // If no price movement, assume 100% overlap
+        : 1;
 
-    // STEP 5: Final validation and percentage conversion
-    // Only count as overlap if ranges actually intersect
-    // highTick > minTick AND lowTick < maxTick = ranges overlap
     const ratio = highTick > minTick && lowTick < maxTick ? ratioTrue * 100 : 0;
-
-    // STEP 6: Return valid percentage (0-100%)
     return isNaN(ratio) || !ratio ? 0 : ratio;
   }
 
   /**
-   * Fee calculation with proper scaling
+   * Fee calculation with proper token assignments
    */
   private calculateFeesUsingSimplifiedMethod(
     dayData: PoolDayData,
@@ -546,19 +409,18 @@ export class AerodromePosition {
       this.previousFeeGrowth1X128.toString(),
     );
 
-    // Defilab's base calculation (assumes you get all fees)
+    // Calculate base fees (before scaling by LP share)
     const baseFeeToken0 =
-      (fg[0] * this.liquidityAmount * activeLiquidityPercent) / 100;
+      (fg[0] * this.liquidityAmount * activeLiquidityPercent) / 100; // USDC fees
     const baseFeeToken1 =
-      (fg[1] * this.liquidityAmount * activeLiquidityPercent) / 100;
+      (fg[1] * this.liquidityAmount * activeLiquidityPercent) / 100; // cbBTC fees
 
-    // Scale by your actual share of the pool to account for competition
-    // Other LPs are also providing liquidity and competing for the same fees
-    const feeToken0 = baseFeeToken0 * this.lpSharePercentage;
-    const feeToken1 = baseFeeToken1 * this.lpSharePercentage;
+    // Scale by actual LP share percentage
+    const feeToken0 = baseFeeToken0; // * this.lpSharePercentage; // USDC fees
+    const feeToken1 = baseFeeToken1; //  * this.lpSharePercentage; // cbBTC fees
 
-    // Convert to USD
-    const feesUSD = feeToken0 * this.currentBtcPrice + feeToken1;
+    // Convert to USD - USDC fees + (cbBTC fees * BTC price)
+    const feesUSD = feeToken0 + feeToken1 * this.currentBtcPrice;
 
     this.previousFeeGrowth0X128 = currentFeeGrowth0;
     this.previousFeeGrowth1X128 = currentFeeGrowth1;
@@ -566,119 +428,67 @@ export class AerodromePosition {
   }
 
   /**
-   * Defilab calcUnboundedFees implementation
-   *
-   * PURPOSE: Calculate the amount of fees earned per unit of liquidity over a specific time period.
-   * This tells us how much fees were generated and available for distribution to all liquidity providers.
-   *
-   * UNISWAP V3 FEE MECHANICS BACKGROUND:
-   * - Every swap in a Uniswap pool generates trading fees (typically 0.05%, 0.30%, or 1.00%)
-   * - These fees are accumulated globally and tracked per unit of liquidity
-   * - The pool stores "feeGrowthGlobal0X128" and "feeGrowthGlobal1X128" values
-   * - These represent cumulative fees per liquidity unit since the pool's creation
-   * - To get fees for a period, we subtract: current_fee_growth - previous_fee_growth
-   *
-   * WHY "UNBOUNDED"?
-   * - "Unbounded" means we calculate total fees as if we had infinite range liquidity
-   * - This gives us the theoretical maximum fees that could be earned
-   * - Individual positions earn a fraction based on their actual liquidity and range
-   * - Think of it as "total pie size" before we calculate our specific slice
-   *
-   * WHY X128 FORMAT?
-   * - Uniswap uses Q128 fixed-point arithmetic for fee growth tracking
-   * - 2^128 is a massive scaling factor to maintain precision with tiny fee amounts
-   * - This prevents precision loss when dealing with very small fee increments
-   * - Example: 0.000001 fee becomes 340,282,366,920,938,463,463,374,607,431,768,211,456 in X128
-   *
-   * DECIMAL NORMALIZATION:
-   * - Different tokens have different decimal places (USDC=6, cbBTC=8, WETH=18)
-   * - We must normalize to get actual token amounts rather than "wei" amounts
-   * - Example: 1,000,000 USDC-wei = 1.0 USDC (divide by 10^6)
-   * - Example: 100,000,000 cbBTC-wei = 1.0 cbBTC (divide by 10^8)
+   * Fee growth calculation with proper decimal handling
    */
   private calcUnboundedFees(
-    globalfee0: string, // Current cumulative fee growth for token0 (X128 format)
-    prevGlobalfee0: string, // Previous cumulative fee growth for token0 (X128 format)
-    globalfee1: string, // Current cumulative fee growth for token1 (X128 format)
-    prevGlobalfee1: string, // Previous cumulative fee growth for token1 (X128 format)
+    globalfee0: string, // Current cumulative fee growth for token0 (USDC) in X128 format
+    prevGlobalfee0: string, // Previous cumulative fee growth for token0 (USDC) in X128 format
+    globalfee1: string, // Current cumulative fee growth for token1 (cbBTC) in X128 format
+    prevGlobalfee1: string, // Previous cumulative fee growth for token1 (cbBTC) in X128 format
   ): [number, number] {
     // Returns [fee0_per_liquidity, fee1_per_liquidity] in actual token units
 
-    // STEP 1: Convert token0 fee growth from X128 format to actual token units
-
-    // Current token0 fee growth per liquidity unit
-    // Process: X128_value → divide by 2^128 → divide by 10^decimals → actual_token_amount
+    // STEP 1: Convert token0 (USDC) fee growth from X128 format
     const fg0_0 =
-      parseInt(globalfee0) / // Convert string to number
-      Math.pow(2, 128) / // Remove X128 scaling (convert from fixed-point)
-      Math.pow(10, this.token0Decimals); // Remove decimal scaling (convert from wei to actual tokens)
+      parseInt(globalfee0) /
+      Math.pow(2, 128) /
+      Math.pow(10, this.token0Decimals); // USDC decimals (6)
 
-    // Previous token0 fee growth per liquidity unit (same process)
     const fg0_1 =
-      parseInt(prevGlobalfee0) / // Convert string to number
-      Math.pow(2, 128) / // Remove X128 scaling
-      Math.pow(10, this.token0Decimals); // Remove decimal scaling
+      parseInt(prevGlobalfee0) /
+      Math.pow(2, 128) /
+      Math.pow(10, this.token0Decimals); // USDC decimals (6)
 
-    // STEP 2: Convert token1 fee growth from X128 format to actual token units
-
-    // Current token1 fee growth per liquidity unit
+    // STEP 2: Convert token1 (cbBTC) fee growth from X128 format
     const fg1_0 =
-      parseInt(globalfee1) / // Convert string to number
-      Math.pow(2, 128) / // Remove X128 scaling
-      Math.pow(10, this.token1Decimals); // Remove decimal scaling (note: different decimals!)
+      parseInt(globalfee1) /
+      Math.pow(2, 128) /
+      Math.pow(10, this.token1Decimals); // cbBTC decimals (8)
 
-    // Previous token1 fee growth per liquidity unit (same process)
     const fg1_1 =
-      parseInt(prevGlobalfee1) / // Convert string to number
-      Math.pow(2, 128) / // Remove X128 scaling
-      Math.pow(10, this.token1Decimals); // Remove decimal scaling
+      parseInt(prevGlobalfee1) /
+      Math.pow(2, 128) /
+      Math.pow(10, this.token1Decimals); // cbBTC decimals (8)
 
-    // STEP 3: Calculate fee growth delta (difference) for each token
-    // This gives us the fees earned per liquidity unit during this specific time period
-
-    const fg0 = fg0_0 - fg0_1; // Token0 fees earned per liquidity unit (in actual token0 units)
-    const fg1 = fg1_0 - fg1_1; // Token1 fees earned per liquidity unit (in actual token1 units)
-
-    // EXAMPLE INTERPRETATION:
-    // If fg0 = 0.000001 and we have 1,000,000 liquidity units:
-    // - We earned 0.000001 * 1,000,000 = 1.0 token0 in fees
-    // If fg1 = 0.0000005 and we have 1,000,000 liquidity units:
-    // - We earned 0.0000005 * 1,000,000 = 0.5 token1 in fees
+    // STEP 3: Calculate fee growth delta for each token
+    const fg0 = fg0_0 - fg0_1; // USDC fees earned per liquidity unit
+    const fg1 = fg1_0 - fg1_1; // cbBTC fees earned per liquidity unit
 
     return [fg0, fg1];
   }
 
   /**
-   * Convert USD price to Uniswap tick value (adapted from Defilab's getTickFromPrice)
-   *
-   * PURPOSE: Uniswap V3 uses "ticks" instead of prices for range calculations.
-   * This converts a USD price (e.g., $105,000) to a tick number (e.g., -69637).
-   *
-   * TICK MATH: tick = log(price_adjusted) / log(1.0001)
-   * Each tick represents a 0.01% price change (1.0001^tick = price_ratio)
+   * Tick calculation with proper decimal adjustment
    */
   private getTickFromPrice(price: number): number {
     // STEP 1: Invert price to match pool's token assignment
-    // Pool has token0=USDC, token1=cbBTC, but we treat price as "BTC price in USD"
+    // Pool: token0/token1 = USDC/cbBTC, but price is "BTC price in USD"
     // So we need USDC-per-cbBTC ratio, which is 1/price
     const invertedPrice = 1 / price;
 
     // STEP 2: Apply decimal adjustment for token precision
-    // Different tokens have different decimal places (USDC=6, cbBTC=8)
-    // This normalizes the price ratio for Uniswap's internal calculations
+    // Now using token1 - token0 (cbBTC - USDC = 8 - 6 = +2)
     const valToLog =
-      invertedPrice * Math.pow(10, this.token0Decimals - this.token1Decimals);
+      invertedPrice * Math.pow(10, this.token1Decimals - this.token0Decimals);
 
     // STEP 3: Convert to tick using Uniswap's logarithmic formula
-    // Uniswap uses base 1.0001 logarithms where each tick = 0.01% price change
-    // Formula: tick = log(adjusted_price) / log(1.0001)
     const tickIDXRaw = Math.log(valToLog) / Math.log(1.0001);
 
     // STEP 4: Round to nearest integer tick
-    // Uniswap only allows integer tick values, so we round to the closest one
     return Math.round(tickIDXRaw);
   }
 
+  // Impermanent loss calculation
   calculateImpermanentLoss(currentBtcPrice: number): number {
     const priceRatio = currentBtcPrice / this.initialBtcPrice;
     const sqrtPriceRatio = Math.sqrt(priceRatio);
@@ -703,11 +513,11 @@ export class AerodromePosition {
     currentTvl: number,
     gasCost: number = 0,
   ): void {
-    // Implementation for rebalancing if needed
     this.totalGasCosts += gasCost;
     this.rebalanceCount++;
   }
 
+  // Static factory method with proper default decimals
   static create(
     initialAmount: number,
     positionType: PositionType,
@@ -717,10 +527,10 @@ export class AerodromePosition {
     initialToken1Price: number,
     totalPoolLiquidity: number,
     tickSpacing: number = 2000,
-    token0Decimals: number = 8, // cbBTC (match btcAmount)
-    token1Decimals: number = 6, // USDC (match stablecoinAmount)
-  ): AerodromePosition {
-    return new AerodromePosition(
+    token0Decimals: number = 6, // USDC (actual token0)
+    token1Decimals: number = 8, // cbBTC (actual token1)
+  ): AerodromeSwapDecimalsPosition {
+    return new AerodromeSwapDecimalsPosition(
       initialAmount,
       positionType,
       initialTick,
@@ -734,7 +544,6 @@ export class AerodromePosition {
     );
   }
 
-  // Getters for compatibility
   getRunningAPR(): number {
     if (this.totalDays === 0) return 0;
     const netFees = this.cumulativeFees - this.totalGasCosts;
@@ -779,6 +588,10 @@ export class AerodromePosition {
     return this.initialAmount;
   }
 
+  get positionLiquidityAmount(): number {
+    return this.liquidityAmount;
+  }
+
   get positionInfo(): {
     type: PositionType;
     range: PositionRange;
@@ -790,6 +603,16 @@ export class AerodromePosition {
       range: this.positionRange,
       tickSpacing: this.tickSpacing,
       sharePercentage: this.lpSharePercentage,
+    };
+  }
+
+  get tokenAmounts(): {
+    usdc: number;
+    btc: number;
+  } {
+    return {
+      usdc: this.usdcAmount,
+      btc: this.btcAmount,
     };
   }
 }
