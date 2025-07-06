@@ -752,6 +752,9 @@ export class AppService {
   }
 
   private async checkLpRebalancing(currentPrice: number, position: any) {
+    const { lpTargetPositionValue, lpRebalanceRange } =
+      this.configService.get('strategy');
+
     // Get current position range
     const tickLower = Number(position.tickLower);
     const tickUpper = Number(position.tickUpper);
@@ -780,7 +783,6 @@ export class AppService {
 
     let rebalancingNeeded = false;
     let rebalancingAction = '';
-    const newRangePercent = 0.1; // Default 10% range
 
     // Price out of range
     const isLiquidityZero = Number(position.liquidity) === 0;
@@ -792,11 +794,11 @@ export class AppService {
       this.logger.log(`LP rebalancing triggered: Price out of range`);
     }
 
-    // test
-    // await this.uniswapLpService.rebalancePosition(
+    // Swap underlying tokens
+    // await this.uniswapLpService.rebalanceTokens(
     //   this.POSITION_ID,
-    //   20,
-    //   newRangePercent,
+    //   lpTargetPositionValue,
+    //   lpRebalanceRange,
     //   0.005,
     // );
     // return;

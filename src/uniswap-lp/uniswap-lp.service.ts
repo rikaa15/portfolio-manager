@@ -1,16 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ethers, JsonRpcProvider, Wallet, formatUnits } from 'ethers';
-import { Token, CurrencyAmount, Percent, TradeType } from '@uniswap/sdk-core';
-import {
-  Pool,
-  computePoolAddress,
-  nearestUsableTick,
-  TickMath,
-  Position,
-  SwapRouter,
-  Trade,
-} from '@uniswap/v3-sdk';
+import { Token } from '@uniswap/sdk-core';
 import { abi as NonfungiblePositionManagerABI } from '@uniswap/v3-periphery/artifacts/contracts/NonfungiblePositionManager.sol/NonfungiblePositionManager.json';
 import { abi as SwapRouterABI } from '@uniswap/v3-periphery/artifacts/contracts/SwapRouter.sol/SwapRouter.json';
 import { abi as QuoterABI } from '@uniswap/v3-periphery/artifacts/contracts/lens/Quoter.sol/Quoter.json';
@@ -30,7 +21,6 @@ import {
   formatPositionAmounts,
   getPoolPriceHistory,
 } from './uniswap-lp.utils';
-// import { fetchCurrentPoolData, fetchPoolInfo } from './subgraph.client';
 import {
   ERC20_ABI,
   fetchPoolInfoDirect,
@@ -896,12 +886,12 @@ export class UniswapLpService {
       // Approve token spending
       await this.approveToken(params.tokenIn.address, amountInRaw);
 
-      const poolContract = new ethers.Contract(
-        this.uniswapConfig.poolAddress,
-        POOL_ABI,
-        this.provider,
-      );
-      const fee = await poolContract.fee()
+      // const poolContract = new ethers.Contract(
+      //   this.uniswapConfig.poolAddress,
+      //   POOL_ABI,
+      //   this.provider,
+      // );
+      // const fee = await poolContract.fee()
 
       // Prepare swap parameters
       const swapParams = {
@@ -915,11 +905,8 @@ export class UniswapLpService {
         sqrtPriceLimitX96: 0,
       };
 
-      console.log('swapParams', swapParams)
-
       // Execute swap
       const tx = await this.swapRouterContract.exactInputSingle(swapParams);
-      console.log('tx', tx)
       const receipt = await tx.wait();
 
       // Calculate actual amounts
@@ -1010,7 +997,7 @@ export class UniswapLpService {
   /**
    * Rebalance LP position using swaps
    */
-  async rebalancePosition(
+  async rebalanceTokens(
     tokenId: string,
     targetValue: number, // Target value of the position in USD
     targetRatio: number = 0.5, // Target 50/50 ratio
@@ -1022,8 +1009,18 @@ export class UniswapLpService {
       );
 
       const position = await this.getPosition(tokenId);
-      const wbtcBalance = 0; // await this.getTokenBalance(position.token0.address);
-      const usdcBalance = 0; // await this.getTokenBalance(position.token1.address);
+      const wbtcBalance = parseFloat(
+        formatUnits(
+          await this.getTokenBalance(position.token0.address),
+          position.token0.decimals,
+        ),
+      );
+      const usdcBalance = parseFloat(
+        formatUnits(
+          await this.getTokenBalance(position.token1.address),
+          position.token1.decimals,
+        ),
+      );
 
       // Get current prices
       const wbtcPrice = await this.getTokenPrice(position.token0.address);
@@ -1035,65 +1032,66 @@ export class UniswapLpService {
       const targetWbtcAmount = targetWbtcValue / wbtcPrice;
       const targetUsdcAmount = targetUsdcValue / 1;
 
-      const wbtcToSwap =
-        targetWbtcAmount > 0
-          ? Math.max(
-              0,
-              targetWbtcAmount -
-                parseFloat(formatUnits(wbtcBalance, position.token0.decimals)),
-            )
-          : 0;
-      const usdcToSwap =
-        targetUsdcAmount > 0
-          ? Math.max(
-              0,
-              targetUsdcAmount -
-                parseFloat(formatUnits(usdcBalance, position.token1.decimals)),
-            )
-          : 0;
+      const shortageA = Math.max(0, targetWbtcAmount - wbtcBalance);
+      const surplusA = Math.max(0, wbtcBalance - targetWbtcAmount);
+      const shortageB = Math.max(0, targetUsdcAmount - usdcBalance);
+      const surplusB = Math.max(0, usdcBalance - targetUsdcAmount);
 
-      this.logger.log(
-        `Target WBTC Amount: ${targetWbtcAmount}, WBTC To Swap: ${
-          wbtcToSwap
-        }, WBTC wallet balance: ${formatUnits(
-          wbtcBalance,
-          position.token0.decimals,
-        )}, Target USDC Amount: ${targetUsdcAmount}, USDC To Swap: ${
-          usdcToSwap
-        }, USDC wallet balance: ${formatUnits(
-          usdcBalance,
-          position.token1.decimals,
-        )}`,
-      );
+      let swapDirection = 0; // tokens[0] WBTC ---> tokens[1] USDC
+      let swapAmount = 0;
 
-      // if (wbtcToSwap > 0) {
-      //   this.logger.log(`Swapping ${wbtcToSwap.toFixed(6)} WBTC for USDC`);
-      //
-      //   const quote = await this.quoteSwap({
-      //     tokenIn: position.token0,
-      //     tokenOut: position.token1,
-      //     amountIn: wbtcToSwap.toString(),
-      //     fee: Number(position.fee),
-      //     slippageTolerance: maxSlippage,
-      //   });
-      //
-      // this.logger.log(`Swap quote ${quote.amountOutMin}`);
+      if (shortageB > 0 && surplusA > 0) {
+        swapDirection = 0; // A ---> B
+        swapAmount = shortageB / wbtcPrice;
+      } else if (shortageA > 0 && surplusB > 0) {
+        swapDirection = 1; // B ---> A
+        swapAmount = shortageA / wbtcPrice;
+      }
 
-      //
-      //   await this.executeSwap({
-      //     tokenIn: position.token0,
-      //     tokenOut: position.token1,
-      //     amountIn: wbtcToSwap.toString(),
-      //     amountOutMin: quote.amountOutMin,
-      //     fee: Number(position.fee),
-      //     slippageTolerance: maxSlippage,
-      //   });
-      //
-      //   return;
-      // }
+      this.logger.log(`
+      Tokens rebalancing:
+        shortage WBTC: ${shortageA},
+        surplus WBTC: ${surplusA},
+        shortage USDC: ${shortageB},
+        surplus USDC: ${surplusB}
+        swap direction: ${swapDirection === 0 ? 'WBTC ---> USDC' : 'USDC ---> WBTC'}
+        swap amount: ${swapAmount}
+      `);
 
-      if (usdcToSwap > 0) {
-        this.logger.log(`Swapping ${targetUsdcValue.toFixed(6)} USDC for WBTC`);
+      if (shortageA === 0 && shortageB === 0) {
+        this.logger.log(`Balances match target amounts, no swap needed`);
+        return;
+      }
+
+      if (shortageA > 0 && shortageB === 0) {
+        throw new Error('Insufficient balances for both tokens');
+      } else if (surplusA > 0 && shortageB === 0) {
+        this.logger.log('Excess balances for both tokens, no swap needed');
+      }
+
+      if (swapAmount > 0 && swapDirection === 0) {
+        this.logger.log(`Swapping ${swapAmount.toFixed(6)} WBTC for USDC`);
+
+        const quote = await this.quoteSwap({
+          tokenIn: position.token0,
+          tokenOut: position.token1,
+          amountIn: swapAmount.toString(),
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
+
+        this.logger.log(`Swap quote ${quote.amountOutMin}`);
+
+        await this.executeSwap({
+          tokenIn: position.token0,
+          tokenOut: position.token1,
+          amountIn: swapAmount.toString(),
+          amountOutMin: quote.amountOutMin,
+          fee: Number(position.fee),
+          slippageTolerance: maxSlippage,
+        });
+      } else if (swapAmount > 0 && swapDirection === 1) {
+        this.logger.log(`Swapping ${swapAmount.toFixed(6)} USDC for WBTC`);
 
         const quote = await this.quoteSwap({
           tokenIn: position.token1,
@@ -1113,10 +1111,8 @@ export class UniswapLpService {
           fee: Number(position.fee),
           slippageTolerance: maxSlippage,
         });
-
-        return
       } else {
-        this.logger.log('Position already balanced');
+        this.logger.log(`No swap needed`);
       }
     } catch (error) {
       this.logger.error(`Error rebalancing position: ${error.message}`);
