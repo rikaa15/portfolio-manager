@@ -2,8 +2,8 @@ import 'dotenv/config';
 
 function getBooleanEnv(key: string, defaultValue: boolean): boolean {
   return typeof process.env[key] === 'string'
-  ? process.env[key] === 'true'
-  : defaultValue;
+    ? process.env[key] === 'true'
+    : defaultValue;
 }
 
 export interface BaseConfig {
@@ -64,13 +64,16 @@ export default (): Config => ({
   strategy: {
     lpRebalanceEnabled: getBooleanEnv('LP_REBALANCING_ENABLED', true),
     hedgeEnabled: getBooleanEnv('HEDGE_ENABLED', false),
-    lpTargetPositionValue: parseFloat(process.env.LP_TARGET_POSITION_VALUE || '30'),
+    lpTargetPositionValue: parseFloat(
+      process.env.LP_TARGET_POSITION_VALUE || '30',
+    ),
     lpRebalanceRange: parseFloat(process.env.LP_REBALANCE_RANGE || '0.05'),
   },
   lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1025094',
-    positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-07-04',
+    positionCreationDate:
+      process.env.UNISWAP_POSITION_CREATION_DATE || '2025-07-04',
   },
   aerodrome: {
     poolAddress: process.env.AERODROME_POOL_ADDRESS || '',
@@ -104,9 +107,11 @@ export default (): Config => ({
       pools: [
         process.env.AERODROME_POOL_ADDRESS, // User's specific pool from env
         '0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb', // cbBTC/USDC (volatile)
-        '0x1F40e42E92Cd3dDEC8Ac7d950A4E15378a0A7d8e', // WETH/USDC (volatile) 
+        '0x1F40e42E92Cd3dDEC8Ac7d950A4E15378a0A7d8e', // WETH/USDC (volatile)
         '0x0b1A513ee24972DAEf112bC777a5610d4325C9e7', // cbBTC/WBTC (stable)
-      ].filter(Boolean).filter((pool, index, arr) => arr.indexOf(pool) === index), // Remove duplicates and empty values
+      ]
+        .filter(Boolean)
+        .filter((pool, index, arr) => arr.indexOf(pool) === index), // Remove duplicates and empty values
     },
   },
   hyperliquid: {

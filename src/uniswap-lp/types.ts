@@ -205,18 +205,18 @@ export interface SwapQuoteParams {
  * Swap quote result
  */
 export interface SwapQuoteResult {
-  amountIn: string;
-  amountOut: string;
+  // amountIn: string;
+  // amountOut: string;
   amountOutMin: string;
-  priceImpact: number; // Price impact as percentage
-  gasEstimate: bigint;
-  gasPrice: bigint;
-  estimatedCostInUsd: number;
-  route: {
-    tokenIn: Token;
-    tokenOut: Token;
-    fee: number;
-  };
+  // priceImpact: number; // Price impact as percentage
+  // gasEstimate: bigint;
+  // gasPrice: bigint;
+  // estimatedCostInUsd: number;
+  // route: {
+  //   tokenIn: Token;
+  //   tokenOut: Token;
+  //   fee: number;
+  // };
 }
 
 /**
