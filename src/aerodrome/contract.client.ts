@@ -435,9 +435,11 @@ export const getGaugeInfo = async (
     const isStaked = await gaugeContract.stakedContains(userAddress, tokenId);
 
     let pendingRewards = '0';
-    if (isStaked) {
+    try {
       const rewardsWei = await gaugeContract.earned(userAddress, tokenId);
-      pendingRewards = formatUnits(rewardsWei, 18); // AERO has 18 decimals
+      pendingRewards = formatUnits(rewardsWei, 18);
+    } catch (error) {
+      pendingRewards = '0';
     }
 
     return { isStaked, pendingRewards };
@@ -471,15 +473,45 @@ export async function getUserPosition(
       provider,
     );
 
-    const balance = await positionManager.balanceOf(userAddress);
+    const allTokenIds: bigint[] = [];
     
-    if (balance === 0n) {
-      return null;
-    }
+    // Check unstaked NFTs
+    const balance = await positionManager.balanceOf(userAddress);
 
     for (let i = 0; i < Number(balance); i++) {
       try {
         const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
+        allTokenIds.push(tokenId);
+      } catch (error) {
+      }
+    }
+    
+    // Check staked NFTs
+    const gaugeAddress = poolInfo.gauge.address;
+    if (gaugeAddress && gaugeAddress !== '0x0000000000000000000000000000000000000000') {
+      try {
+        const gaugeContract = new ethers.Contract(gaugeAddress, GAUGE_ABI, provider);
+        const stakedLength = await gaugeContract.stakedLength(userAddress);
+        
+        for (let i = 0; i < Number(stakedLength); i++) {
+          try {
+            const tokenId = await gaugeContract.stakedByIndex(userAddress, i);
+            allTokenIds.push(tokenId);
+          } catch (error) {
+          }
+        }
+      } catch (error) {
+      }
+    }
+    
+    if (allTokenIds.length === 0) {
+      return null;
+    }
+
+    // Check each NFT to see if it matches the target pool
+    for (let i = 0; i < allTokenIds.length; i++) {
+      try {
+        const tokenId = allTokenIds[i];
         const position = await positionManager.positions(tokenId);
         
         if (
