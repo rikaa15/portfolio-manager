@@ -1,7 +1,7 @@
 // src/aerodrome/subgraph.client.ts
 import axios from 'axios';
 import 'dotenv/config';
-import { PoolDayData, PoolInfo } from './types';
+import { PoolDayData, PoolHourData, PoolInfo } from './types';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -63,6 +63,42 @@ const POOL_DAY_DATA_QUERY = `
       high
       low
       sqrtPrice
+    }
+  }
+`;
+
+const POOL_HOUR_DATA_QUERY = `
+  query PoolHourData($poolId: ID!, $startTime: Int!, $endTime: Int!, $skip: Int!) {
+    poolHourDatas(
+      where: { 
+        pool: $poolId, 
+        periodStartUnix_gte: $startTime, 
+        periodStartUnix_lte: $endTime 
+      }
+      orderBy: periodStartUnix
+      orderDirection: asc
+      first: 1000
+      skip: $skip
+    ) {
+      id
+      periodStartUnix
+      liquidity
+      sqrtPrice
+      token0Price
+      token1Price
+      tick
+      feeGrowthGlobal0X128
+      feeGrowthGlobal1X128
+      tvlUSD
+      volumeToken0
+      volumeToken1
+      volumeUSD
+      feesUSD
+      txCount
+      open
+      high
+      low
+      close
     }
   }
 `;
@@ -157,4 +193,130 @@ export async function fetchPoolDayData(
     return [];
   }
   return data.poolDayDatas;
+}
+
+/**
+ * Get historical hourly data for backtesting with automatic pagination
+ * Handles subgraph 1000-entry limit by making multiple requests
+ * Returns complete dataset for the requested time period
+ */
+export async function fetchPoolHourData(
+  poolAddress: string,
+  startDate: string,
+  endDate: string,
+): Promise<PoolHourData[]> {
+  const formattedPoolAddress = poolAddress.toLowerCase();
+  const startTimestamp = getUnixTimestamp(startDate);
+  const endTimestamp = getUnixTimestamp(endDate);
+
+  console.log(
+    `Fetching hourly data from ${startDate} to ${endDate} (${startTimestamp} to ${endTimestamp})`,
+  );
+
+  const allHourData: PoolHourData[] = [];
+  let skip = 0;
+  const batchSize = 1000;
+  let hasMoreData = true;
+  let batchCount = 0;
+
+  // Continue fetching until we get all data or reach a reasonable limit
+  while (hasMoreData && batchCount < 20) {
+    // Safety limit to prevent infinite loops
+    batchCount++;
+    console.log(`Fetching batch ${batchCount}, skip: ${skip}`);
+
+    try {
+      const data = await executeQuery(
+        POOL_HOUR_DATA_QUERY,
+        {
+          poolId: formattedPoolAddress,
+          startTime: startTimestamp,
+          endTime: endTimestamp,
+          skip,
+        },
+        'PoolHourData',
+      );
+
+      if (!data?.poolHourDatas || data.poolHourDatas.length === 0) {
+        console.log('No more hourly data available');
+        hasMoreData = false;
+        break;
+      }
+
+      const batchData = data.poolHourDatas;
+      allHourData.push(...batchData);
+
+      console.log(
+        `Retrieved ${batchData.length} entries. Total so far: ${allHourData.length}`,
+      );
+
+      // If we got less than the batch size, we've reached the end
+      if (batchData.length < batchSize) {
+        hasMoreData = false;
+      } else {
+        skip += batchSize;
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch (error) {
+      console.error(`Error fetching batch ${batchCount}:`, error);
+      // Continue with what we have rather than failing completely
+      hasMoreData = false;
+    }
+  }
+
+  console.log(
+    `Completed fetching hourly data. Total entries: ${allHourData.length}`,
+  );
+
+  // Sort by timestamp to ensure chronological order
+  allHourData.sort((a, b) => a.periodStartUnix - b.periodStartUnix);
+
+  return allHourData;
+}
+
+/**
+ * Get statistics about available data for a pool
+ * Useful for understanding data completeness before backtesting
+ */
+export async function getDataCoverage(
+  poolAddress: string,
+  startDate: string,
+  endDate: string,
+): Promise<{
+  dailyEntries: number;
+  hourlyEntries: number;
+  expectedHourlyEntries: number;
+  coveragePercentage: number;
+  firstEntry: number;
+  lastEntry: number;
+}> {
+  // const formattedPoolAddress = poolAddress.toLowerCase();
+  const startTimestamp = getUnixTimestamp(startDate);
+  const endTimestamp = getUnixTimestamp(endDate);
+
+  // Calculate expected hourly entries
+  const hoursDiff = Math.floor((endTimestamp - startTimestamp) / 3600);
+
+  // Get actual data
+  const [dailyData, hourlyData] = await Promise.all([
+    fetchPoolDayData(poolAddress, startDate, endDate),
+    fetchPoolHourData(poolAddress, startDate, endDate),
+  ]);
+
+  const firstEntry = hourlyData.length > 0 ? hourlyData[0].periodStartUnix : 0;
+  const lastEntry =
+    hourlyData.length > 0
+      ? hourlyData[hourlyData.length - 1].periodStartUnix
+      : 0;
+
+  return {
+    dailyEntries: dailyData.length,
+    hourlyEntries: hourlyData.length,
+    expectedHourlyEntries: hoursDiff,
+    coveragePercentage: hourlyData.length / hoursDiff,
+    firstEntry,
+    lastEntry,
+  };
 }
