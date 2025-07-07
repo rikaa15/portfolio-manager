@@ -96,6 +96,8 @@ const POOL_DAY_DATA_QUERY = `
       token1Price
       liquidity
       tick
+      high
+      low
     }
   }
 `;
@@ -211,7 +213,6 @@ export async function fetchPoolDayPrices(
     console.error('No pool day data returned from GraphQL query');
     return [];
   }
-
   return data.poolDayDatas;
 }
 

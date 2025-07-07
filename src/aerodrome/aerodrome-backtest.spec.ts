@@ -1,109 +1,75 @@
-// src/aerodrome/aerodrome-backtest.spec.ts
-import {
-  fetchPoolInfo,
-  fetchPoolDayData,
-  fetchPoolPositions,
-} from './subgraph.client';
-import { PoolDayData, PoolInfo } from './types';
-import { calculatePositionFees } from './aerodrome.utils';
+import 'dotenv/config';
+import { fetchPoolInfo, fetchPoolDayData } from './subgraph.client';
+import { PoolTestConfig, PositionType } from './types';
+import { AerodromeSwapDecimalsPosition } from './aerodrome-defilabs.position';
+import { logger } from './aerodrome.utils';
 
-const POOL_ADDRESS = '0x3e66e55e97ce60096f74b7c475e8249f2d31a9fb'; // cbBTC/USDC Pool
-const INITIAL_INVESTMENT = 1000;
-
-const logger = {
-  log: (message: string) => {
-    process.stdout.write(message + '\n');
+const POOL_CONFIGS: Record<string, PoolTestConfig> = {
+  // Original cbBTC/USDC pool (newer, March 2025)
+  cbBTC_USDC: {
+    poolName: 'cbBTC/USDC',
+    poolAddress: '0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb',
+    token0Symbol: 'cbBTC',
+    token1Symbol: 'USDC',
+    token0Decimals: 6, // USDC has 6 decimals
+    token1Decimals: 8, // cbBTC has 8 decimals
+    tickSpacing: 2000, // Emerging tokens use 20% (tick space 2000)
+    initialAmount: 1000,
+    positionType: '10%',
+    startDate: '2025-06-01',
+    endDate: '2025-06-30',
   },
-  error: (message: string) => {
-    process.stderr.write(message + '\n');
+  // ETH/USDC pool (older, more established)
+  WETH_USDC: {
+    poolName: 'WETH/USDC',
+    poolAddress: '0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59',
+    token0Symbol: 'WETH',
+    token1Symbol: 'USDC',
+    token0Decimals: 18, // WETH has 18 decimals
+    token1Decimals: 6, // USDC has 6 decimals
+    tickSpacing: 100, // Volatile tokens use 2% (tick space 200)
+    initialAmount: 1000,
+    positionType: '10%',
+    startDate: '2024-06-01',
+    endDate: '2024-07-31',
   },
 };
 
-const getUnixTimestamp = (dateString: string): number => {
-  return Math.floor(new Date(dateString).getTime() / 1000);
-};
+const REBALANCE_COOLDOWN_DAYS = 1;
+const GAS_COST_PER_REBALANCE = 5;
 
+// Date helpers
 const formatDate = (unixTimestamp: number): string => {
   return new Date(unixTimestamp * 1000).toISOString().split('T')[0];
 };
 
-/**
- * Calculate impermanent loss percentage
- * Uses the standard AMM formula for constant product pools
- * For single token IL (like BTC/USDC where USDC stays ~$1):
- * - Pass only currentToken0Price and initialToken0Price
- * - Token1 prices will default to 1 (stable)
- * For two-token IL:
- * - Pass all 4 parameters
- */
-function calculateImpermanentLoss(
-  currentToken0Price: number,
-  initialToken0Price: number,
-  currentToken1Price: number = 1, // Default to 1 for stable token
-  initialToken1Price: number = 1, // Default to 1 for stable token
-): number {
-  // Price ratio: relative change between token0 and token1 prices
-  const priceRatio =
-    currentToken0Price /
-    initialToken0Price /
-    (currentToken1Price / initialToken1Price);
-
-  // Square root from constant product formula (x * y = k) used in AMMs
-  const sqrtPriceRatio = Math.sqrt(priceRatio);
-
-  // LP value formula: accounts for automatic rebalancing in AMM pools
-  const lpValue = (2 * sqrtPriceRatio) / (1 + priceRatio);
-
-  // Holding value normalized to 1 (100% baseline)
-  const holdValue = 1;
-
-  // Impermanent loss: LP performance vs holding 50/50 portfolio
-  return (lpValue - holdValue) * 100; // Convert to percentage
-}
-
-/**
- * Run Aerodrome backtest simulation using modular subgraph client
- * This function orchestrates the backtesting process with clean data flow
- */
 async function runAerodromeBacktest(
-  poolAddress: string,
-  startDate: string,
-  endDate: string,
-  initialAmount: number,
-  positionType: string = 'full-range',
+  config: PoolTestConfig,
+  enableRebalancing: boolean = true,
 ): Promise<void> {
-  logger.log('=== cbBTC/USDC Aerodrome LP Backtest ===');
-  logger.log(`Pool: ${poolAddress}`);
-  logger.log(`Period: ${startDate} to ${endDate}`);
-  logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
-  logger.log('');
-
   try {
-    logger.log('Fetching pool information...');
-    const poolInfo: PoolInfo = await fetchPoolInfo(poolAddress);
+    const poolInfo = await fetchPoolInfo(config.poolAddress);
     logger.log(
-      `Pool Info: ${poolInfo.token0.symbol}/${poolInfo.token1.symbol}`,
+      `===  Aerodrome ${poolInfo.token0.symbol}/${poolInfo.token1.symbol} LP Backtest (${config.positionType.toUpperCase()}) ===`,
     );
-    logger.log(
-      `Current TVL: $${parseFloat(poolInfo.totalValueLockedUSD).toLocaleString()}`,
-    );
+    logger.log(`Pool: ${config.poolAddress}`);
+    logger.log(`Tick Spacing: ${config.tickSpacing}`);
+    logger.log(`Period: ${config.startDate} to ${config.endDate}`);
+    logger.log(`Initial Investment: $${config.initialAmount.toLocaleString()}`);
+    logger.log(`Position Type: ${config.positionType}`);
+    logger.log(`Rebalancing: ${enableRebalancing ? 'ENABLED' : 'DISABLED'}`);
     logger.log('');
 
-    logger.log('Fetching position distribution...');
-    const allPositions = await fetchPoolPositions(poolAddress);
-    logger.log(`Found ${allPositions.length} positions in pool`);
+    logger.log(`Fetching pool information...`);
+    logger.log('');
 
-    // Get historical data using the client
+    // Get historical data
     logger.log('Fetching historical data...');
-    const startTimestamp = getUnixTimestamp(startDate);
-    const endTimestamp = getUnixTimestamp(endDate);
-
-    const poolDayData: PoolDayData[] = await fetchPoolDayData(
-      poolAddress,
-      startTimestamp,
-      endTimestamp,
+    const poolDayData = await fetchPoolDayData(
+      config.poolAddress,
+      config.startDate,
+      config.endDate,
     );
-
     if (poolDayData.length === 0) {
       logger.log('No data found for the specified period');
       return;
@@ -112,108 +78,227 @@ async function runAerodromeBacktest(
     logger.log(`Found ${poolDayData.length} days of data`);
     logger.log('');
 
-    // Calculate initial LP share based on first day's TVL
     const firstDay = poolDayData[0];
-    const lpSharePercentage = initialAmount / parseFloat(firstDay.tvlUSD);
-
-    logger.log(`Initial TVL: $${parseFloat(firstDay.tvlUSD).toLocaleString()}`);
-    logger.log(`LP Share: ${(lpSharePercentage * 100).toFixed(6)}%`);
-    logger.log('');
-
-    // Track cumulative values
-    let cumulativeFees = 0;
+    const initialTick = parseInt(firstDay.tick);
+    const initialTvl = parseFloat(firstDay.tvlUSD);
     const initialToken0Price = parseFloat(firstDay.token0Price);
+    const initialToken1Price = parseFloat(firstDay.token1Price);
+    const totalPoolLiquidity = parseFloat(firstDay.liquidity);
 
-    // token1 is USDC
-    // const initialToken1Price = parseFloat(firstDay.token1Price);
+    const position = AerodromeSwapDecimalsPosition.create(
+      config.initialAmount,
+      config.positionType,
+      initialTick,
+      initialTvl,
+      initialToken0Price,
+      initialToken1Price,
+      totalPoolLiquidity,
+      config.tickSpacing,
+      config.token0Decimals,
+      config.token1Decimals,
+    );
 
+    const positionInfo = position.positionInfo;
+    logger.log(`Initial TVL: $${initialTvl.toLocaleString()}`);
+    logger.log(`LP Share: ${(positionInfo.sharePercentage * 100).toFixed(6)}%`);
+    logger.log(`Tick Spacing: ${positionInfo.tickSpacing}`);
+    logger.log('');
     logger.log('Daily Performance:');
     logger.log('');
 
-    logger.log('Fetching position distribution...');
+    let lastRebalanceDay = 0;
 
-    // Process each day of backtest data
+    // Process each day with enhanced logging
     poolDayData.forEach((dayData, index) => {
       const dayNumber = index + 1;
       const date = formatDate(dayData.date);
 
-      const dailyPositionFees = calculatePositionFees(
-        dayData,
-        positionType,
-        allPositions,
-        lpSharePercentage,
-        2000, // cbBTC/USDC tick spacing
-      );
-
-      cumulativeFees += dailyPositionFees;
-
-      // Calculate current position value
+      const currentTick = parseInt(dayData.tick);
+      // const alignedTick =
+      //   Math.floor(currentTick / position.positionInfo.tickSpacing) *
+      //   position.positionInfo.tickSpacing;
       const currentTVL = parseFloat(dayData.tvlUSD);
-      const currentPositionValue = currentTVL * lpSharePercentage;
 
-      // Calculate impermanent loss vs holding strategy
+      const isInRangeBeforeRebalance = !position.isOutOfRange(currentTick);
+
+      // Check if rebalancing is needed (strategy logic in backtesting script)
+      let shouldRebalance = false;
+      if (enableRebalancing) {
+        const isOutOfRange = position.isOutOfRange(currentTick);
+        const canRebalance =
+          dayNumber > lastRebalanceDay + REBALANCE_COOLDOWN_DAYS;
+        shouldRebalance = isOutOfRange && canRebalance;
+      }
+
+      // Perform rebalancing if needed (before updating daily)
+      if (shouldRebalance) {
+        position.rebalance(currentTick, currentTVL, GAS_COST_PER_REBALANCE);
+        lastRebalanceDay = dayNumber;
+      }
+
+      // Update position state for this day
+      const dailyFees = position.updateDaily(dayData, shouldRebalance);
+
+      const currentPositionValue = position.getCurrentPositionValue();
+
       const currentToken0Price = parseFloat(dayData.token0Price);
+      const impermanentLoss =
+        position.calculateImpermanentLoss(currentToken0Price);
 
-      const impermanentLoss = calculateImpermanentLoss(
-        currentToken0Price,
-        initialToken0Price,
-      );
+      // Calculate total PnL (net of gas costs)
+      const totalPnL =
+        currentPositionValue -
+        config.initialAmount +
+        position.currentPositionFeesEarned;
 
-      // Calculate total PnL (position change + fees)
-      const positionPnL = currentPositionValue - initialAmount;
-      const totalPnL = positionPnL + cumulativeFees;
+      const runningAPR = position.getRunningAPR();
+      const weightedPositionAPR =
+        lastRebalanceDay > 0 ? position.getWeightedPositionAPR() : runningAPR;
 
-      // Calculate running APR based on fees only
-      const daysElapsed = dayNumber;
-      const runningAPR =
-        (cumulativeFees / initialAmount) * (365 / daysElapsed) * 100;
+      const rangeStatus =
+        config.positionType === 'full-range'
+          ? ''
+          : isInRangeBeforeRebalance
+            ? ' [IN-RANGE]'
+            : ' [OUT-OF-RANGE]';
 
-      // Clean output: Position Value, IL, PnL, APR
+      const rebalanceStatus =
+        enableRebalancing && shouldRebalance ? ' [REBALANCED]' : '';
+
+      const tickInfo =
+        config.positionType !== 'full-range' ? ` | Tick: ${currentTick}` : '';
+
+      const gasInfo =
+        position.gasCostsTotal > 0
+          ? ` | Gas: $${position.gasCostsTotal.toFixed(0)}`
+          : '';
+
       logger.log(
         `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
-          `Value: $${currentPositionValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} | ` +
+          `TVL: ${parseFloat(dayData.tvlUSD).toFixed(2)} | ` +
+          `Value: $${currentPositionValue.toFixed(2)} | ` +
+          `Fees: $${dailyFees.toFixed(2)} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(8)}%`,
+          `Net APR: ${runningAPR.toFixed(3)}% | ` +
+          `Pos APR: ${weightedPositionAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
       );
     });
 
-    // Calculate and display final summary
+    // Enhanced final summary with rebalancing statistics
     const lastDay = poolDayData[poolDayData.length - 1];
-    const finalPositionValue = parseFloat(lastDay.tvlUSD) * lpSharePercentage;
-    const totalReturn =
-      ((finalPositionValue + cumulativeFees - initialAmount) / initialAmount) *
-      100;
-    const finalAPR =
-      (cumulativeFees / initialAmount) * (365 / poolDayData.length) * 100;
+    const finalNetAPR = position.getRunningAPR();
+    const finalGrossAPR = position.getGrossAPR();
+    const timeInRange = position.getTimeInRange();
+
+    // Add current position to results for final analysis
+    if (position.currentPositionDaysActive > 0) {
+      position.rebalance(parseInt(lastDay.tick), parseFloat(lastDay.tvlUSD), 0);
+    }
 
     logger.log('');
-    logger.log('=== Final Summary ===');
-    logger.log(`Initial Investment: $${initialAmount.toLocaleString()}`);
-    logger.log(`Final Position Value: $${finalPositionValue.toLocaleString()}`);
-    logger.log(`Total Fees Collected: $${cumulativeFees.toLocaleString()}`);
+    logger.log('=== APR Analysis ===');
+    logger.log(`Overall Backtest APR (net): ${finalNetAPR.toFixed(2)}%`);
+    logger.log(`Overall Backtest APR (gross): ${finalGrossAPR.toFixed(2)}%`);
     logger.log(
-      `Total Return: ${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`,
+      `Weighted Position APR: ${position.getWeightedPositionAPR().toFixed(2)}%`,
     );
-    logger.log(`Annualized APR (Fees Only): ${finalAPR.toFixed(2)}%`);
+    logger.log(
+      `Gas Impact: ${(finalGrossAPR - finalNetAPR).toFixed(2)}% APR reduction`,
+    );
+    logger.log('');
+
+    if (config.positionType !== 'full-range') {
+      logger.log('=== Range Management ===');
+      logger.log(`Time in Range: ${timeInRange.toFixed(1)}%`);
+      logger.log(
+        `Days In Range: ${position.totalDaysInRange} / ${position.daysActive}`,
+      );
+      logger.log(`Total Rebalances: ${position.rebalanceCountTotal}`);
+      logger.log(
+        `Average Days Between Rebalances: ${(position.daysActive / (position.rebalanceCountTotal + 1)).toFixed(1)}`,
+      );
+
+      const rangeWidth =
+        positionInfo.range.tickUpper - positionInfo.range.tickLower;
+      logger.log(`Current Range Width: ${rangeWidth} ticks`);
+
+      logger.log('');
+      logger.log('=== Concentration Analysis ===');
+
+      // Create a temporary full-range position to compare liquidity
+      const fullRangePosition = AerodromeSwapDecimalsPosition.create(
+        config.initialAmount,
+        'full-range',
+        initialTick,
+        initialTvl,
+        initialToken0Price,
+        initialToken1Price,
+        totalPoolLiquidity,
+        config.tickSpacing,
+        config.token0Decimals,
+        config.token1Decimals,
+      );
+
+      const concentratedLiquidity = position.positionLiquidityAmount;
+      const fullRangeLiquidity = fullRangePosition.positionLiquidityAmount;
+      const concentrationMultiplier =
+        concentratedLiquidity / fullRangeLiquidity;
+
+      logger.log(
+        `Concentrated Liquidity: ${concentratedLiquidity.toFixed(0)} units`,
+      );
+      logger.log(
+        `Full-Range Liquidity: ${fullRangeLiquidity.toFixed(0)} units`,
+      );
+      logger.log(
+        `Concentration Multiplier: ${concentrationMultiplier.toFixed(2)}x`,
+      );
+      logger.log(`Position Type: ${config.positionType} vs Full-Range`);
+
+      // CHANGE: Add theoretical fee earning potential
+      logger.log('');
+      logger.log('=== Fee Earning Potential ===');
+      logger.log(
+        `Theoretical Fee Advantage: ${concentrationMultiplier.toFixed(2)}x higher than full-range`,
+      );
+      logger.log(
+        `Liquidity Density: ${concentrationMultiplier.toFixed(2)}x more concentrated`,
+      );
+    }
   } catch (error: any) {
     if (error.message) {
-      logger.error('Backtest failed: ' + error.message);
+      logger.error('Aerodrome backtest failed: ' + error.message);
     } else {
-      logger.error('Backtest failed: ' + String(error));
+      logger.error('Aerodrome backtest failed: ' + String(error));
     }
   }
 }
 
-describe('Aerodrome LP Backtesting', () => {
-  it('should backtest cbBTC/USDC LP performance using modular subgraph client', async () => {
-    await runAerodromeBacktest(
-      POOL_ADDRESS,
-      '2025-06-01',
-      '2025-06-20',
-      INITIAL_INVESTMENT,
-      'full-range',
-    );
+describe('Aerodrome LP Backtesting with Real Fee Growth', () => {
+  it('should backtest cbBTC/USDC LP performance for 10% range position with real fee growth calculations (spread pattern)', async () => {
+    const baseConfig = POOL_CONFIGS.cbBTC_USDC;
+    const localConfig = {
+      ...baseConfig,
+      initialAmount: 10000,
+      positionType: '10%' as PositionType,
+      startDate: '2025-06-01',
+      endDate: '2025-06-30',
+    };
+    await runAerodromeBacktest(localConfig, true);
     expect(true).toBe(true);
-  }, 60000);
+  }, 120000);
+
+  // it('should backtest cbBTC/USDC LP performance for 10% range position with real fee growth calculations (spread pattern)', async () => {
+  //   const baseConfig = POOL_CONFIGS.WETH_USDC;
+  //   const localConfig = {
+  //     ...baseConfig,
+  //     // initialAmount: 1000,
+  //     // positionType: '10%' as PositionType,
+  //     // startDate: '2025-06-01',
+  //     // endDate: '2025-06-30',
+  //   };
+  //   await runAerodromeBacktest(localConfig, true);
+  //   expect(true).toBe(true);
+  // }, 120000);
 });

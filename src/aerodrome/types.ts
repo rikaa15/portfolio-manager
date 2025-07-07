@@ -76,6 +76,11 @@ export interface PoolDayData {
   token1Price: string;
   tick: string;
   liquidity: string;
+  feeGrowthGlobal0X128: string;
+  feeGrowthGlobal1X128: string;
+  high: string;
+  low: string;
+  sqrtPrice: string;
 }
 
 export interface Position {
@@ -89,7 +94,10 @@ export interface Position {
 export interface PositionRange {
   tickLower: number;
   tickUpper: number;
-  positionType: string;
+  // positionType: string;
+  rangeWidth: number;
+  priceLower: number;
+  priceUpper: number;
 }
 
 export interface TickData {
@@ -101,32 +109,18 @@ export interface TickData {
   feesUSD: string;
 }
 
-export interface SubgraphPositionFees {
-  collectedFeesToken0: string;
-  collectedFeesToken1: string;
-  uncollectedFeesToken0?: string;
-  uncollectedFeesToken1?: string;
+export interface PoolTestConfig {
+  poolName: string;
+  poolAddress: string;
   token0Symbol: string;
   token1Symbol: string;
-  token0Decimals: string;
-  token1Decimals: string;
+  token0Decimals: number;
+  token1Decimals: number;
+  tickSpacing: number;
+  initialAmount: number;
+  positionType: PositionType;
+  startDate: string;
+  endDate: string;
 }
 
-/**
- * Position structure returned from Position Manager contract
- * Based on the positions(uint256 tokenId) function signature
- */
-export interface PositionManagerPosition {
-  nonce: bigint;
-  operator: string;
-  token0: string;
-  token1: string;
-  fee: number;
-  tickLower: number;
-  tickUpper: number;
-  liquidity: bigint;
-  feeGrowthInside0LastX128: bigint;
-  feeGrowthInside1LastX128: bigint;
-  tokensOwed0: bigint;
-  tokensOwed1: bigint;
-}
+export type PositionType = 'full-range' | `${number}%`;

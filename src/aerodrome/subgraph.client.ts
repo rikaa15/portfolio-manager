@@ -1,6 +1,7 @@
+// src/aerodrome/subgraph.client.ts
 import axios from 'axios';
 import 'dotenv/config';
-import { PoolDayData, PoolInfo, Position } from './types';
+import { PoolDayData, PoolInfo } from './types';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -12,6 +13,10 @@ const client = axios.create({
     Authorization: `Bearer ${SUBGRAPH_API_KEY}`,
   },
 });
+
+const getUnixTimestamp = (dateString: string): number => {
+  return Math.floor(new Date(dateString).getTime() / 1000);
+};
 
 const POOL_INFO_QUERY = `
   query PoolInfo($poolId: ID!) {
@@ -53,46 +58,20 @@ const POOL_DAY_DATA_QUERY = `
       token1Price
       tick
       liquidity
+      feeGrowthGlobal0X128
+      feeGrowthGlobal1X128
+      high
+      low
+      sqrtPrice
     }
   }
 `;
 
-const POOL_POSITIONS_QUERY = `
-  query PoolPositions($poolId: ID!) {
-    positions(
-      where: { 
-        pool: $poolId,
-        liquidity_gt: "0",
-        owner_not: "0x0000000000000000000000000000000000000000"
-      }
-      first: 1000
-      orderBy: liquidity
-      orderDirection: desc
-    ) {
-      id
-      liquidity
-      owner
-      tickLower {
-        tickIdx
-        liquidityGross
-        liquidityNet
-        feeGrowthOutside0X128
-        feeGrowthOutside1X128
-        feesUSD
-      }
-      tickUpper {
-        tickIdx
-        liquidityGross
-        liquidityNet
-        feeGrowthOutside0X128
-        feeGrowthOutside1X128
-        feesUSD
-      }
-    }
-  }
-`;
-
-export async function executeQuery(
+/**
+ * Execute GraphQL query against Aerodrome subgraph
+ * Simplified version without position tracking (not needed for unstaked positions)
+ */
+async function executeQuery(
   query: string,
   variables: any,
   operationName?: string,
@@ -129,8 +108,8 @@ export async function executeQuery(
 }
 
 /**
- * Get comprehensive pool information including TVL and liquidity
- * Used for initial pool analysis and setup
+ * Get pool information for setup and validation
+ * Same structure as Uniswap but using Aerodrome subgraph
  */
 export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
   const formattedPoolAddress = poolAddress.toLowerCase();
@@ -152,21 +131,23 @@ export async function fetchPoolInfo(poolAddress: string): Promise<PoolInfo> {
 
 /**
  * Get historical daily data for backtesting
- * Returns comprehensive daily metrics including fees, volume, prices, and block info
+ * Uses same data structure as Uniswap for unified processing
  */
 export async function fetchPoolDayData(
   poolAddress: string,
-  startTime: number,
-  endTime: number,
+  startDate: string,
+  endDate: string,
 ): Promise<PoolDayData[]> {
   const formattedPoolAddress = poolAddress.toLowerCase();
+  const startTimestamp = getUnixTimestamp(startDate);
+  const endTimestamp = getUnixTimestamp(endDate);
 
   const data = await executeQuery(
     POOL_DAY_DATA_QUERY,
     {
       poolId: formattedPoolAddress,
-      startDate: startTime,
-      endDate: endTime,
+      startDate: startTimestamp,
+      endDate: endTimestamp,
     },
     'PoolDayData',
   );
@@ -175,27 +156,5 @@ export async function fetchPoolDayData(
     console.error('No pool day data returned from GraphQL query');
     return [];
   }
-
   return data.poolDayDatas;
-}
-
-export async function fetchPoolPositions(
-  poolAddress: string,
-): Promise<Position[]> {
-  const formattedPoolAddress = poolAddress.toLowerCase();
-
-  const data = await executeQuery(
-    POOL_POSITIONS_QUERY,
-    {
-      poolId: formattedPoolAddress,
-    },
-    'PoolPositions',
-  );
-
-  if (!data?.positions) {
-    console.warn('No position data found for pool');
-    return [];
-  }
-
-  return data.positions;
 }
