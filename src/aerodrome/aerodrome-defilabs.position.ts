@@ -84,6 +84,7 @@ export class AerodromeSwapDecimalsPosition {
     this.token0Decimals = token0Decimals;
     this.token1Decimals = token1Decimals;
 
+    // Added poolTVL for full-range liquidity calculation
     this.poolTVL = initialTvl;
 
     // Calculate position range
@@ -513,8 +514,43 @@ export class AerodromeSwapDecimalsPosition {
     currentTvl: number,
     gasCost: number = 0,
   ): void {
+    // Store completed position results for weighted APR calculation
+    if (this.currentPositionDays > 0) {
+      this.positionResults.push({
+        duration: this.currentPositionDays,
+        fees: this.currentPositionFees,
+        gasCost: gasCost,
+        startingCapital: this.currentPositionCapital,
+      });
+    }
+
+    // Update capital with ONLY earned fees (gas costs paid in native token, not LP tokens)
+    this.currentPositionCapital += this.currentPositionFees;
+
+    this.initialBtcPrice = this.currentBtcPrice; // Reset IL baseline
+    // Update position range to current price
+    this.positionRange = this.getPositionTickRange(
+      currentTick,
+      this.positionType,
+      this.tickSpacing,
+    );
+
+    // Recalculate liquidity units for new position with new capital
+    this.calculateTokensAndLiquidity(
+      this.currentPositionCapital,
+      this.currentBtcPrice,
+    );
+
+    // Track gas costs separately (for APR calculations only)
     this.totalGasCosts += gasCost;
+
+    // Reset position tracking for new position
+    this.currentPositionDays = 0;
+    this.currentPositionFees = 0;
+
+    // Update counters
     this.rebalanceCount++;
+    this.lastRebalanceDay = this.totalDays;
   }
 
   // Static factory method with proper default decimals
@@ -551,11 +587,29 @@ export class AerodromeSwapDecimalsPosition {
   }
 
   getWeightedPositionAPR(): number {
-    return this.getRunningAPR();
+    if (this.positionResults.length === 0) return 0;
+
+    let totalWeightedAPR = 0;
+    let totalDays = 0;
+
+    for (const position of this.positionResults) {
+      const netFees = position.fees - position.gasCost;
+      const netAPR =
+        (netFees / position.startingCapital) * (365 / position.duration) * 100;
+      totalWeightedAPR += netAPR * position.duration;
+      totalDays += position.duration;
+    }
+
+    return totalDays > 0 ? totalWeightedAPR / totalDays : 0;
   }
+
   getGrossAPR(): number {
-    return this.getRunningAPR();
+    if (this.totalDays === 0) return 0;
+    return (
+      (this.cumulativeFees / this.initialAmount) * (365 / this.totalDays) * 100
+    );
   }
+
   getTimeInRange(): number {
     return this.totalDays === 0 ? 0 : (this.daysInRange / this.totalDays) * 100;
   }
@@ -604,6 +658,15 @@ export class AerodromeSwapDecimalsPosition {
       tickSpacing: this.tickSpacing,
       sharePercentage: this.lpSharePercentage,
     };
+  }
+
+  get completedPositions(): Array<{
+    duration: number;
+    fees: number;
+    gasCost: number;
+    startingCapital: number;
+  }> {
+    return [...this.positionResults];
   }
 
   get tokenAmounts(): {
