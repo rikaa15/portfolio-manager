@@ -8,10 +8,13 @@ import { ethers } from 'ethers';
 import { FundingService } from './funding/funding.service';
 import * as moment from 'moment';
 import { getTokenPrice } from './aerodrome/coingecko.client';
+import { DataSource } from 'typeorm';
+import { AppStateEntity } from './entities/app.state.entity';
 
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
+  private LP_PROVIDER: string;
   private POSITION_ID: string;
   private readonly MONITORING_INTERVAL = 10 * 60 * 1000; // 10 minutes (was 60 minutes)
   private readonly FEE_COLLECTION_THRESHOLD = 100; // 100 USDC worth of fees
@@ -60,23 +63,62 @@ export class AppService {
     private readonly hyperliquidService: HyperliquidService,
     private readonly fundingService: FundingService,
     private readonly configService: ConfigService<Config>,
-  ) {
-    this.POSITION_ID = this.configService.get('uniswap').positionId;
-  }
+    private dataSource: DataSource,
+  ) {}
 
   async bootstrap() {
     this.logger.log('Starting BTC/USDC LP strategy...');
 
+    const lpProvider = this.configService.get('lpProvider');
+    const uniswapPositionId = this.configService.get('uniswap').positionId;
+    // TODO: add Aerodrome LP positionId
+    const aerodromePositionId = this.configService.get('aerodrome').positionId;
+    const lpPositionId =
+      lpProvider === 'aerodrome' ? aerodromePositionId : uniswapPositionId;
+
     try {
-      this.logger.log('Getting realized hedge PnL...');
-      this.initialHedgePnL = await this.hyperliquidService.getRealizedPnL();
-      this.logger.log(
-        `Initial realized hedge PnL: $${this.initialHedgePnL.toFixed(2)}`,
+      const currentState = await this.dataSource.manager.findOne(
+        AppStateEntity,
+        {
+          where: {
+            lpProvider,
+          },
+          order: { createdAt: 'DESC' },
+        },
       );
+
+      if (!currentState) {
+        const newAppState = this.dataSource.manager.create(AppStateEntity, {
+          lpProvider,
+          lpPositionId,
+        });
+        await this.dataSource.manager.save(AppStateEntity, newAppState);
+        this.logger.log(
+          `New app state created: provider=${lpProvider}, positionId=${lpPositionId}`,
+        );
+      } else {
+      }
+
+      this.LP_PROVIDER = lpProvider;
+      this.POSITION_ID = lpPositionId;
     } catch (error) {
-      this.logger.error(`Failed to get realized PnL: ${error.message}`);
+      this.logger.error(
+        `Failed to start BTC/USDC LP strategy: ${error.message}`,
+      );
       throw error;
     }
+    process.exit(1);
+
+    // try {
+    //   this.logger.log('Getting realized hedge PnL...');
+    //   this.initialHedgePnL = await this.hyperliquidService.getRealizedPnL();
+    //   this.logger.log(
+    //     `Initial realized hedge PnL: $${this.initialHedgePnL.toFixed(2)}`,
+    //   );
+    // } catch (error) {
+    //   this.logger.error(`Failed to get realized PnL: ${error.message}`);
+    //   throw error;
+    // }
 
     try {
       // Initialize LP service based on provider selection

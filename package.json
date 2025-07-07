@@ -18,6 +18,11 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "typeorm": "ts-node ./node_modules/typeorm/cli",
+    "migration:run": "npm run typeorm migration:run -- -d ./src/config/typeorm.ts",
+    "migration:generate": "npm run typeorm -- -d ./src/config/typeorm.ts migration:generate ./src/migrations/$npm_config_name",
+    "migration:create": "npm run typeorm -- migration:create ./src/migrations/$npm_config_name",
+    "migration:revert": "npm run typeorm -- -d ./src/config/typeorm.ts migration:revert",
     "backtest": "jest src/app.service.spec.ts --verbose"
   },
   "dependencies": {
@@ -25,6 +30,8 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/swagger": "^8.1.1",
+    "@nestjs/typeorm": "^11.0.0",
     "@nktkas/hyperliquid": "^0.21.1",
     "@uniswap/sdk-core": "^7.7.2",
     "@uniswap/v3-periphery": "^1.4.4",
@@ -36,8 +43,10 @@
     "joi": "^17.13.3",
     "moment": "^2.30.1",
     "node-fetch": "^2.7.0",
+    "pg": "^8.16.3",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
+    "typeorm": "^0.3.25",
     "undici": "^7.10.0",
     "viem": "^2.30.5"
   },
