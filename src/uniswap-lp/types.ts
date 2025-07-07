@@ -166,3 +166,51 @@ export interface PoolHourPrice {
   tvlUSD: string;
   volumeUSD: string;
 }
+
+export interface SwapQuoteParams {
+  tokenIn: Token;
+  tokenOut: Token;
+  amountIn: string; // Amount in human readable format (e.g., "1.5")
+  fee: number; // Fee tier (e.g., 3000 for 0.3%)
+  slippageTolerance: number; // Slippage tolerance as decimal (e.g., 0.005 for 0.5%)
+  deadline?: number; // Unix timestamp deadline
+}
+
+export interface SwapQuoteResult {
+  // amountIn: string;
+  // amountOut: string;
+  amountOutMin: string;
+  // priceImpact: number; // Price impact as percentage
+  // gasEstimate: bigint;
+  // gasPrice: bigint;
+  // estimatedCostInUsd: number;
+  // route: {
+  //   tokenIn: Token;
+  //   tokenOut: Token;
+  //   fee: number;
+  // };
+}
+
+export interface SwapExecuteParams {
+  tokenIn: Token;
+  tokenOut: Token;
+  amountIn: string;
+  amountOutMin: string;
+  fee: number;
+  slippageTolerance: number;
+  deadline?: number;
+  recipient?: string;
+}
+
+/**
+ * Swap execution result
+ */
+export interface SwapExecuteResult {
+  transactionHash: string;
+  amountIn: string;
+  amountOut: string;
+  gasUsed: bigint;
+  gasPrice: bigint;
+  effectiveGasPrice: bigint;
+  totalCostInUsd: number;
+}
