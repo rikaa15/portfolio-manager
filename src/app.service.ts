@@ -108,14 +108,14 @@ export class AppService {
 
   private async monitorPosition() {
     try {
-      this.logger.log('Getting current hedge position...');
-      const currentHedgePosition =
-        await this.hyperliquidService.getUserPosition('BTC');
-
       // Get current position state
       const position = await this.getLpPosition();
       const lpProvider = this.configService.get('lpProvider');
       this.logger.log(`${lpProvider} position:`, position);
+
+      if (position.liquidity === '0') {
+        // throw new Error('Position liquidity is 0');
+      }
 
       // TODO: get from subgraph / api
       const positionStartDate =
@@ -181,6 +181,10 @@ export class AppService {
 
       // Calculate BTC delta from LP position
       const lpBtcDelta = wbtcAmount;
+
+      this.logger.log('Getting current hedge position...');
+      const currentHedgePosition =
+        await this.hyperliquidService.getUserPosition('BTC');
 
       // Calculate BTC delta from hedge position
       let hedgeBtcDelta = 0;
@@ -770,10 +774,6 @@ export class AppService {
       `LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`,
     );
 
-    // Calculate price position within current range
-    const pricePosition =
-      (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
-
     // Check cooldown period
     const timeSinceLastRebalance = Date.now() - this.lastLpRebalance;
     if (timeSinceLastRebalance < 1000 * 60) {
@@ -795,13 +795,11 @@ export class AppService {
     }
 
     // Swap underlying tokens
-    // await this.uniswapLpService.rebalanceTokens(
-    //   this.POSITION_ID,
-    //   lpTargetPositionValue,
-    //   lpRebalanceRange,
-    //   0.005,
-    // );
-    // return;
+    await this.uniswapLpService.rebalanceTokens(
+      this.POSITION_ID,
+      lpTargetPositionValue,
+      lpRebalanceRange,
+    );
 
     if (isLiquidityZero) {
       rebalancingNeeded = true;
@@ -836,7 +834,6 @@ export class AppService {
     const newUpperPrice = currentPrice * (1 + lpRebalanceRange / 2);
 
     // Convert prices to ticks
-    const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
     const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
 
     this.logger.log(`Rebalancing LP position:
@@ -902,7 +899,7 @@ export class AppService {
     this.logger.log(`Adding new liquidity:
       New WBTC amount: ${newWbtcAmount.toFixed(position.token0.decimals)} (${addLiquidityParams.amount0Desired})
       New USDC amount: ${newUsdcAmount.toFixed(position.token1.decimals)} (${addLiquidityParams.amount1Desired})
-      Ticks: ${addLiquidityParams.tickLower} - ${addLiquidityParams.tickUpper}
+      Ticks: [${addLiquidityParams.tickLower}, ${addLiquidityParams.tickUpper}]
       Recipient: ${addLiquidityParams.recipient}
       Fee: ${addLiquidityParams.fee}
     `);

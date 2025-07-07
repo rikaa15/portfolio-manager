@@ -418,6 +418,8 @@ export class UniswapLpService {
       this.approveToken(params.token1.address, BigInt(params.amount1Desired)),
     ]);
 
+    this.logger.log('Tokens approved, liquidity addition...');
+
     const tx = await this.nfpmContract.connect(this.signer).mint({
       token0: params.token0.address,
       token1: params.token1.address,
@@ -431,6 +433,10 @@ export class UniswapLpService {
       recipient: params.recipient,
       deadline: params.deadline,
     });
+
+    this.logger.log(
+      `Liquidity added, txHash = ${tx.transactionHash}, waiting for transaction to confirm...`,
+    );
 
     const receipt = await tx.wait();
     let tokenId: string | undefined;
