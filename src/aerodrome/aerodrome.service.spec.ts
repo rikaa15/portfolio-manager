@@ -22,6 +22,9 @@ describe('AerodromeLpService Integration Tests', () => {
               if (key === 'base') {
                 return config.base;
               }
+              if (key === 'aerodrome') {
+                return config.aerodrome;
+              }
               return null;
             }),
           },

@@ -29,6 +29,9 @@ const GAUGE_ABI = [
 
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, int24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
+  'function balanceOf(address owner) external view returns (uint256)',
+  'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
+  'function ownerOf(uint256 tokenId) external view returns (address)',
 ];
 
 function calculatePricesFromSqrtPrice(
@@ -59,26 +62,37 @@ export async function fetchPoolInfoDirect(
   poolAddress: string,
   provider: JsonRpcProvider,
   blockNumber?: number,
+  knownGaugeAddress?: string,
 ): Promise<ContractPoolInfo> {
   try {
     const overrides = blockNumber ? { blockTag: blockNumber } : {};
     const poolContract = new ethers.Contract(poolAddress, POOL_ABI, provider);
 
+    // Try to get basic pool info first
     const [
       token0Address,
       token1Address,
       liquidity,
       stakedLiquidity,
       slot0,
-      gaugeAddress,
     ] = await Promise.all([
       poolContract.token0(overrides),
       poolContract.token1(overrides),
       poolContract.liquidity(overrides),
       poolContract.stakedLiquidity(overrides),
       poolContract.slot0(overrides),
-      poolContract.gauge(overrides),
     ]);
+
+    // Try to get gauge address, but handle cases where it might not exist
+    let gaugeAddress = knownGaugeAddress || '0x0000000000000000000000000000000000000000';
+    try {
+      const poolGaugeAddress = await poolContract.gauge(overrides);
+      gaugeAddress = poolGaugeAddress;
+    } catch (error) {
+      if (knownGaugeAddress) {
+        gaugeAddress = knownGaugeAddress;
+      }
+    }
 
     const token0Contract = new ethers.Contract(
       token0Address,
@@ -118,8 +132,7 @@ export async function fetchPoolInfoDirect(
       gaugeFees0 = fees0.toString();
       gaugeFees1 = fees1.toString();
     } catch {
-      console.error('Gauge fees not available');
-      // Gauge fees not available
+      // Gauge fees not available - continue without them
     }
 
     const sqrtPriceX96 = slot0[0];
@@ -282,9 +295,6 @@ export async function checkGaugeStaking(
     return { isStaked, pendingRewards };
   } catch (error: any) {
     // If gauge calls fail, assume not staked
-    console.warn(
-      `Could not check gauge staking for ${tokenId}: ${error.message}`,
-    );
     return { isStaked: false, pendingRewards: '0' };
   }
 }
@@ -311,6 +321,7 @@ export async function getUserStakedPosition(
   poolAddress: string,
   positionManagerAddress: string,
   provider: JsonRpcProvider,
+  knownGaugeAddress?: string,
 ): Promise<{
   tokenId: string;
   position: any;
@@ -318,7 +329,7 @@ export async function getUserStakedPosition(
 } | null> {
   try {
     // Get pool info first
-    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider);
+    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider, undefined, knownGaugeAddress);
 
     // Check if user has staked positions in the gauge
     const gaugeContract = new ethers.Contract(
@@ -424,9 +435,11 @@ export const getGaugeInfo = async (
     const isStaked = await gaugeContract.stakedContains(userAddress, tokenId);
 
     let pendingRewards = '0';
-    if (isStaked) {
+    try {
       const rewardsWei = await gaugeContract.earned(userAddress, tokenId);
-      pendingRewards = formatUnits(rewardsWei, 18); // AERO has 18 decimals
+      pendingRewards = formatUnits(rewardsWei, 18);
+    } catch (error) {
+      pendingRewards = '0';
     }
 
     return { isStaked, pendingRewards };
@@ -435,3 +448,91 @@ export const getGaugeInfo = async (
     return { isStaked: false, pendingRewards: '0' };
   }
 };
+
+/**
+ * Get user's position (staked or unstaked) in a specific pool
+ * Returns the tokenId and position details if found
+ */
+export async function getUserPosition(
+  userAddress: string,
+  poolAddress: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+  knownGaugeAddress?: string,
+): Promise<{
+  tokenId: string;
+  position: any;
+  poolInfo: ContractPoolInfo;
+} | null> {
+  try {
+    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider, undefined, knownGaugeAddress);
+
+    const positionManager = new ethers.Contract(
+      positionManagerAddress,
+      POSITION_MANAGER_ABI,
+      provider,
+    );
+
+    const allTokenIds: bigint[] = [];
+    
+    // Check unstaked NFTs
+    const balance = await positionManager.balanceOf(userAddress);
+
+    for (let i = 0; i < Number(balance); i++) {
+      try {
+        const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
+        allTokenIds.push(tokenId);
+      } catch (error) {
+      }
+    }
+    
+    // Check staked NFTs
+    const gaugeAddress = poolInfo.gauge.address;
+    if (gaugeAddress && gaugeAddress !== '0x0000000000000000000000000000000000000000') {
+      try {
+        const gaugeContract = new ethers.Contract(gaugeAddress, GAUGE_ABI, provider);
+        const stakedLength = await gaugeContract.stakedLength(userAddress);
+        
+        for (let i = 0; i < Number(stakedLength); i++) {
+          try {
+            const tokenId = await gaugeContract.stakedByIndex(userAddress, i);
+            allTokenIds.push(tokenId);
+          } catch (error) {
+          }
+        }
+      } catch (error) {
+      }
+    }
+    
+    if (allTokenIds.length === 0) {
+      return null;
+    }
+
+    // Check each NFT to see if it matches the target pool
+    for (let i = 0; i < allTokenIds.length; i++) {
+      try {
+        const tokenId = allTokenIds[i];
+        const position = await positionManager.positions(tokenId);
+        
+        if (
+          (position.token0.toLowerCase() === poolInfo.token0.address.toLowerCase() &&
+           position.token1.toLowerCase() === poolInfo.token1.address.toLowerCase()) ||
+          (position.token0.toLowerCase() === poolInfo.token1.address.toLowerCase() &&
+           position.token1.toLowerCase() === poolInfo.token0.address.toLowerCase())
+        ) {
+          return {
+            tokenId: tokenId.toString(),
+            position,
+            poolInfo,
+          };
+        }
+      } catch (error) {
+        continue;
+      }
+    }
+
+    return null;
+  } catch (error: any) {
+    throw new Error(`Failed to get user position: ${error.message}`);
+  }
+}

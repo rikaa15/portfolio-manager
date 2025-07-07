@@ -26,14 +26,16 @@ export class HyperliquidService {
   }
 
   async bootstrap() {
-    await this.infoClient.clearinghouseState({ user: this.walletAddress });
+    const currentState = await this.getCurrentState()
     this.logger.log('HyperliquidService bootstrap completed');
   }
 
+  async getCurrentState() {
+    return await this.infoClient.clearinghouseState({ user: this.walletAddress });
+  }
+
   async getUserPosition(coin: string) {
-    const data = await this.infoClient.clearinghouseState({
-      user: this.walletAddress,
-    });
+    const data = await this.getCurrentState()
     return data.assetPositions.find((p) => p.position.coin === coin);
   }
 
@@ -189,5 +191,27 @@ export class HyperliquidService {
     // console.log('Full order object:', JSON.stringify(order, null, 2));
 
     return await this.exchangeClient.order(order);
+  }
+
+  public async getRealizedPnL() {
+    try {
+      const userFills = await this.infoClient.userFills({ user: this.walletAddress });
+      let realizedPnl = 0;
+      for (const fill of userFills) {
+        realizedPnl += parseFloat(fill.closedPnl) - parseFloat(fill.fee);
+      }
+      return realizedPnl;
+    } catch (error) {
+      console.error("Error fetching user fills:", error);
+      return 0;
+    }
+  }
+
+  public async getUnrealizedPnL(coin: string) {
+    const position = await this.getUserPosition(coin);
+    if (!position) return 0;
+
+    const unrealizedPnl = Number(position.position.unrealizedPnl);
+    return unrealizedPnl;
   }
 }
