@@ -1,5 +1,10 @@
 import { logger } from './aerodrome.utils';
-import { PoolDayData, PositionRange, PositionType } from './types';
+import {
+  PoolDayData,
+  PoolHourData,
+  PositionRange,
+  PositionType,
+} from './types';
 
 /**
  * Aerodrome Position class for BTC/stablecoin pairs
@@ -18,14 +23,14 @@ export class AerodromeSwapDecimalsPosition {
   private tickSpacing: number;
 
   private cumulativeFees: number = 0;
-  private daysInRange: number = 0;
-  private totalDays: number = 0;
+  private dataPointsInRange: number = 0;
+  private totalDataPoints: number = 0;
 
   private rebalanceCount: number = 0;
   private totalGasCosts: number = 0;
-  private lastRebalanceDay: number = 0;
+  private lastRebalanceDataPoint: number = 0;
 
-  private currentPositionDays: number = 0;
+  private currentPositionDataPoints: number = 0;
   private currentPositionFees: number = 0;
   private positionResults: Array<{
     duration: number;
@@ -53,12 +58,13 @@ export class AerodromeSwapDecimalsPosition {
   private readonly token0Decimals: number; // USDC (actual token0)
   private readonly token1Decimals: number; // cbBTC (actual token1)
 
-  private dailyActiveFactors: number[] = [];
   private currentTick: number = 0;
 
   // Logical naming aligned with economic meaning
   private usdcAmount: number = 0; // token0 amount (USDC)
   private btcAmount: number = 0; // token1 amount (cbBTC)
+
+  private readonly granularityType: 'daily' | 'hourly';
 
   constructor(
     initialAmount: number,
@@ -68,6 +74,7 @@ export class AerodromeSwapDecimalsPosition {
     initialBtcPrice: number,
     initialToken1Price: number, // Not used but kept for compatibility
     totalPoolLiquidity: number,
+    granularityType: 'daily' | 'hourly' = 'daily',
     tickSpacing: number = 2000,
     token0Decimals: number = 6, // USDC (actual token0)
     token1Decimals: number = 8, // cbBTC (actual token1)
@@ -86,6 +93,8 @@ export class AerodromeSwapDecimalsPosition {
 
     // Added poolTVL for full-range liquidity calculation
     this.poolTVL = initialTvl;
+
+    this.granularityType = granularityType;
 
     // Calculate position range
     this.positionRange = this.getPositionTickRange(
@@ -314,57 +323,58 @@ export class AerodromeSwapDecimalsPosition {
   /**
    * Process daily update
    */
-  updateDaily(
-    dayData: PoolDayData,
+  update(
+    dataPoint: PoolDayData | PoolHourData,
     wasRebalancedToday: boolean = false,
   ): number {
-    this.totalDays++;
-    this.currentPositionDays++;
+    this.totalDataPoints++;
+    this.currentPositionDataPoints++;
 
-    const currentTick = parseInt(dayData.tick);
+    const currentTick = parseInt(dataPoint.tick);
     const isInRange = !this.isOutOfRange(currentTick) && !wasRebalancedToday;
 
     // Update current BTC price
-    this.currentBtcPrice = parseFloat(dayData.token0Price);
+    this.currentBtcPrice = parseFloat(dataPoint.token0Price);
 
     if (isInRange) {
-      this.daysInRange++;
+      this.dataPointsInRange++;
     }
 
     // Calculate active liquidity
     const activeLiquidityPercent =
-      this.calculateActiveLiquidityForCandle(dayData);
-    this.dailyActiveFactors.push(activeLiquidityPercent);
+      this.calculateActiveLiquidityForCandle(dataPoint);
 
-    let dailyFees = 0;
+    let dataPointFees = 0;
     if (isInRange) {
       try {
-        dailyFees = this.calculateFeesUsingSimplifiedMethod(
-          dayData,
+        dataPointFees = this.calculateFeesUsingSimplifiedMethod(
+          dataPoint,
           activeLiquidityPercent,
         );
       } catch (error) {
         logger.warn(`Fee calculation failed: ${error}`);
-        dailyFees = 0;
+        dataPointFees = 0;
       }
     }
 
-    this.cumulativeFees += dailyFees;
-    this.currentPositionFees += dailyFees;
+    this.cumulativeFees += dataPointFees;
+    this.currentPositionFees += dataPointFees;
 
-    return dailyFees;
+    return dataPointFees;
   }
 
   /**
    * Active liquidity calculation
    */
-  private calculateActiveLiquidityForCandle(dayData: PoolDayData): number {
+  private calculateActiveLiquidityForCandle(
+    dataPoint: PoolDayData | PoolHourData,
+  ): number {
     if (this.positionType === 'full-range') {
       return 100; // Always 100% active = always earning fees
     }
 
-    const low = parseFloat(dayData.low || dayData.token0Price);
-    const high = parseFloat(dayData.high || dayData.token0Price);
+    const low = parseFloat(dataPoint.low || dataPoint.token0Price);
+    const high = parseFloat(dataPoint.high || dataPoint.token0Price);
 
     if (!isFinite(low) || !isFinite(high) || low <= 0 || high <= 0) {
       return 0;
@@ -390,13 +400,13 @@ export class AerodromeSwapDecimalsPosition {
    * Fee calculation with proper token assignments
    */
   private calculateFeesUsingSimplifiedMethod(
-    dayData: PoolDayData,
+    dataPoint: PoolDayData | PoolHourData,
     activeLiquidityPercent: number,
   ): number {
-    const currentFeeGrowth0 = BigInt(dayData.feeGrowthGlobal0X128);
-    const currentFeeGrowth1 = BigInt(dayData.feeGrowthGlobal1X128);
+    const currentFeeGrowth0 = BigInt(dataPoint.feeGrowthGlobal0X128);
+    const currentFeeGrowth1 = BigInt(dataPoint.feeGrowthGlobal1X128);
 
-    if (this.totalDays === 1) {
+    if (this.totalDataPoints === 1) {
       this.previousFeeGrowth0X128 = currentFeeGrowth0;
       this.previousFeeGrowth1X128 = currentFeeGrowth1;
       return 0;
@@ -515,9 +525,9 @@ export class AerodromeSwapDecimalsPosition {
     gasCost: number = 0,
   ): void {
     // Store completed position results for weighted APR calculation
-    if (this.currentPositionDays > 0) {
+    if (this.currentPositionDataPoints > 0) {
       this.positionResults.push({
-        duration: this.currentPositionDays,
+        duration: this.currentPositionDataPoints,
         fees: this.currentPositionFees,
         gasCost: gasCost,
         startingCapital: this.currentPositionCapital,
@@ -545,12 +555,12 @@ export class AerodromeSwapDecimalsPosition {
     this.totalGasCosts += gasCost;
 
     // Reset position tracking for new position
-    this.currentPositionDays = 0;
+    this.currentPositionDataPoints = 0;
     this.currentPositionFees = 0;
 
     // Update counters
     this.rebalanceCount++;
-    this.lastRebalanceDay = this.totalDays;
+    this.lastRebalanceDataPoint = this.totalDataPoints;
   }
 
   // Static factory method with proper default decimals
@@ -562,6 +572,7 @@ export class AerodromeSwapDecimalsPosition {
     initialToken0Price: number,
     initialToken1Price: number,
     totalPoolLiquidity: number,
+    granularityType: 'daily' | 'hourly' = 'daily',
     tickSpacing: number = 2000,
     token0Decimals: number = 6, // USDC (actual token0)
     token1Decimals: number = 8, // cbBTC (actual token1)
@@ -574,6 +585,7 @@ export class AerodromeSwapDecimalsPosition {
       initialToken0Price,
       initialToken1Price,
       totalPoolLiquidity,
+      granularityType,
       tickSpacing,
       token0Decimals,
       token1Decimals,
@@ -581,37 +593,73 @@ export class AerodromeSwapDecimalsPosition {
   }
 
   getRunningAPR(): number {
-    if (this.totalDays === 0) return 0;
+    if (this.totalDataPoints === 0) return 0;
     const netFees = this.cumulativeFees - this.totalGasCosts;
-    return (netFees / this.initialAmount) * (365 / this.totalDays) * 100;
+    if (this.granularityType === 'daily') {
+      // Daily: each dataPoint = 1 day
+      return (
+        (netFees / this.initialAmount) * (365 / this.totalDataPoints) * 100
+      );
+    } else {
+      // Hourly: each dataPoint = 1 hour, so 8760 hours per year
+      return (
+        (netFees / this.initialAmount) * (8760 / this.totalDataPoints) * 100
+      );
+    }
   }
 
   getWeightedPositionAPR(): number {
     if (this.positionResults.length === 0) return 0;
 
     let totalWeightedAPR = 0;
-    let totalDays = 0;
+    let totalDataPoints = 0;
 
     for (const position of this.positionResults) {
       const netFees = position.fees - position.gasCost;
-      const netAPR =
-        (netFees / position.startingCapital) * (365 / position.duration) * 100;
+      let netAPR: number;
+      if (this.granularityType === 'daily') {
+        // Daily: duration is in days, annualize with 365 days
+        netAPR =
+          (netFees / position.startingCapital) *
+          (365 / position.duration) *
+          100;
+      } else {
+        // Hourly: duration is in hours, annualize with 8760 hours
+        netAPR =
+          (netFees / position.startingCapital) *
+          (8760 / position.duration) *
+          100;
+      }
       totalWeightedAPR += netAPR * position.duration;
-      totalDays += position.duration;
+      totalDataPoints += position.duration;
     }
-
-    return totalDays > 0 ? totalWeightedAPR / totalDays : 0;
+    return totalDataPoints > 0 ? totalWeightedAPR / totalDataPoints : 0;
   }
 
   getGrossAPR(): number {
-    if (this.totalDays === 0) return 0;
-    return (
-      (this.cumulativeFees / this.initialAmount) * (365 / this.totalDays) * 100
-    );
+    if (this.totalDataPoints === 0) return 0;
+
+    if (this.granularityType === 'daily') {
+      // Daily: each dataPoint = 1 day, annualize with 365 days
+      return (
+        (this.cumulativeFees / this.initialAmount) *
+        (365 / this.totalDataPoints) *
+        100
+      );
+    } else {
+      // Hourly: each dataPoint = 1 hour, annualize with 8760 hours
+      return (
+        (this.cumulativeFees / this.initialAmount) *
+        (8760 / this.totalDataPoints) *
+        100
+      );
+    }
   }
 
   getTimeInRange(): number {
-    return this.totalDays === 0 ? 0 : (this.daysInRange / this.totalDays) * 100;
+    return this.totalDataPoints === 0
+      ? 0
+      : (this.dataPointsInRange / this.totalDataPoints) * 100;
   }
 
   get totalFeesEarned(): number {
@@ -626,14 +674,14 @@ export class AerodromeSwapDecimalsPosition {
   get rebalanceCountTotal(): number {
     return this.rebalanceCount;
   }
-  get daysActive(): number {
-    return this.totalDays;
+  get dataPointsActive(): number {
+    return this.totalDataPoints;
   }
-  get totalDaysInRange(): number {
-    return this.daysInRange;
+  get totalDataPointsInRange(): number {
+    return this.dataPointsInRange;
   }
-  get currentPositionDaysActive(): number {
-    return this.currentPositionDays;
+  get currentPositionDataPointsActive(): number {
+    return this.currentPositionDataPoints;
   }
   get currentPositionFeesEarned(): number {
     return this.currentPositionFees;
