@@ -1,11 +1,11 @@
 ## Uniform output table format for backtesting
 
-| Date                 | BTC Price | Total Portfolio Value | Profit/Loss ($) | Return (%) | Net Gain vs. Hold ($) | Capital Used in Trading | Total Capital Locked | LP Fees Earned | Trading Fees Paid | Gas Fees Paid | Max Drawdown | Max Gain | Impermanent Loss (%) | Hedge Position | Rebalancing Actions | Notes |
-|----------------------|-----------|-----------------------|-----------------|------------|-----------------------|-------------------------|----------------------|----------------|-------------------|---------------|--------------|----------|----------------------|----------------|---------------------|-------|
-| Day 0 (2024-07-01)   | $XX,XXX   | $219,000              | $0              | 0.00%      | $0                    | $219,000                | $219,000             | $0             | $0                | $0            | 0%           | 0%       | 0.00%                | 0%             | 0                   | Start |
-| Day 7 (2024-07-08)   | $XX,XXX   | $XXX,XXX              | $X,XXX          | X.XX%      | $X,XXX                | $XXX,XXX                | $XXX,XXX             | $X,XXX         | $XX               | $X            | X%           | X%       | X.XX%                | XX%            | X                   |       |
-| ...                  | ...       | ...                   | ...             | ...        | ...                   | ...                     | ...                  | ...            | ...               | ...           | ...          | ...      | ...                  | ...            | ...                 |       |
-| Day 365 (2025-07-01) | $YY,YYY   | $ZZZ,ZZZ              | $YY,YYY         | YY.YY%     | $YY,YYY               | $ZZZ,ZZZ                | $ZZZ,ZZZ             | $YY,YYY        | $YY               | $Y            | Y%           | Y%       | Y.YY%                | YY%            | Y                   | End   |
+| timestamp  | btc_price | total_portfolio_value | pnl     | return | net_gain_vs_hold | capital_used_in_trading | total_capital_locked | lp_fees_earned | trading_fees_paid | gas_fees_paid | max_drawdown | max_gain | impermanent_loss | asset_exposure | rebalancing_actions | notes |
+|------------|-----------|-----------------------|---------|--------|------------------|-------------------------|----------------------|----------------|-------------------|---------------|--------------|----------|------------------|----------------|---------------------|-------|
+| 1752071317 | $XX,XXX   | $219,000              | $0      | 0.00%  | $0               | $219,000                | $219,000             | $0             | $0                | $0            | 0%           | 0%       | 0.00%            | 0%             | 0                   | Start |
+| 1752071317 | $XX,XXX   | $XXX,XXX              | $X,XXX  | X.XX%  | $X,XXX           | $XXX,XXX                | $XXX,XXX             | $X,XXX         | $XX               | $X            | X%           | X%       | X.XX%            | XX%            | X                   |       |
+| ...        | ...       | ...                   | ...     | ...    | ...              | ...                     | ...                  | ...            | ...               | ...           | ...          | ...      | ...              | ...            | ...                 |       |
+| 1752071317 | $YY,YYY   | $ZZZ,ZZZ              | $YY,YYY | YY.YY% | $YY,YYY          | $ZZZ,ZZZ                | $ZZZ,ZZZ             | $YY,YYY        | $YY               | $Y            | Y%           | Y%       | Y.YY%            | YY%            | Y                   | End   |
 
 ### Column Definitions & Interpretation
 
@@ -13,7 +13,7 @@
 - Total Portfolio Value: Combined value of all assets (BTC, USDC, LP position, hedge PnL). 
 - Profit/Loss ($): Cumulative profit or loss since inception. 
 - Return (%): Cumulative return as a percentage of starting capital. 
-- Net Gain vs. Hold ($): Difference in profit/loss compared to simply holding 1 BTC + $110k USDC. 
+- Net Gain vs. Hold ($): total profit or loss of providing liquidity compared to holding the assets. It includes trading fees, rewards, and impermanent loss (IL).
 - Capital Used in Trading: Actual capital actively deployed (including margin/collateral for hedges). 
 - Total Capital Locked: All capital locked in LP, hedge collateral, and buffers. 
 - LP Fees Earned: Total fees earned from providing liquidity. 
@@ -22,7 +22,7 @@
 - Max Drawdown: Largest observed peak-to-trough loss during the period. 
 - Max Gain: Largest observed gain relative to starting value. 
 - Impermanent Loss (%): Cumulative impermanent loss as percent of capital. 
-- Hedge Position: Current hedge exposure as a percentage of BTC position. 
+- Asset Exposure: Current hedge exposure as a percentage of the position. 
 - Rebalancing Actions: Number of rebalancing events taken in the period. 
 - Notes: Any relevant qualitative notes (e.g., major market events, strategy adjustments).
 
