@@ -65,6 +65,7 @@ export class AerodromeSwapDecimalsPosition {
   private btcAmount: number = 0; // token1 amount (cbBTC)
 
   private readonly granularityType: 'daily' | 'hourly';
+  private readonly useCompoundingAPR: boolean;
 
   constructor(
     initialAmount: number,
@@ -78,6 +79,7 @@ export class AerodromeSwapDecimalsPosition {
     tickSpacing: number = 2000,
     token0Decimals: number = 6, // USDC (actual token0)
     token1Decimals: number = 8, // cbBTC (actual token1)
+    useCompoundingAPR: boolean = true,
   ) {
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
@@ -91,6 +93,7 @@ export class AerodromeSwapDecimalsPosition {
     this.token0Decimals = token0Decimals;
     this.token1Decimals = token1Decimals;
 
+    this.useCompoundingAPR = useCompoundingAPR;
     // Added poolTVL for full-range liquidity calculation
     this.poolTVL = initialTvl;
 
@@ -566,35 +569,19 @@ export class AerodromeSwapDecimalsPosition {
     this.currentPositionFees = 0;
   }
 
-  // Static factory method with proper default decimals
-  static create(
-    initialAmount: number,
-    positionType: PositionType,
-    initialTick: number,
-    initialTvl: number,
-    initialToken0Price: number,
-    initialToken1Price: number,
-    totalPoolLiquidity: number,
-    granularityType: 'daily' | 'hourly' = 'daily',
-    tickSpacing: number = 2000,
-    token0Decimals: number = 6, // USDC (actual token0)
-    token1Decimals: number = 8, // cbBTC (actual token1)
-  ): AerodromeSwapDecimalsPosition {
-    return new AerodromeSwapDecimalsPosition(
-      initialAmount,
-      positionType,
-      initialTick,
-      initialTvl,
-      initialToken0Price,
-      initialToken1Price,
-      totalPoolLiquidity,
-      granularityType,
-      tickSpacing,
-      token0Decimals,
-      token1Decimals,
-    );
+  /**
+   * Unified APR calculation method using position's compounding setting
+   * @returns APR percentage based on position's compounding configuration
+   */
+  getAPR(): number {
+    if (this.useCompoundingAPR) {
+      // If we have completed positions, use weighted APR
+      if (this.positionResults.length > 0) {
+        return this.getWeightedPositionAPR();
+      }
+    }
+    return this.getRunningAPR();
   }
-
   getRunningAPR(): number {
     if (this.totalDataPoints === 0) return 0;
     const netFees = this.cumulativeFees - this.totalGasCosts;
@@ -663,6 +650,37 @@ export class AerodromeSwapDecimalsPosition {
     return this.totalDataPoints === 0
       ? 0
       : (this.dataPointsInRange / this.totalDataPoints) * 100;
+  }
+
+  // Static factory method with proper default decimals
+  static create(
+    initialAmount: number,
+    positionType: PositionType,
+    initialTick: number,
+    initialTvl: number,
+    initialToken0Price: number,
+    initialToken1Price: number,
+    totalPoolLiquidity: number,
+    granularityType: 'daily' | 'hourly' = 'daily',
+    tickSpacing: number = 2000,
+    token0Decimals: number = 6, // USDC (actual token0)
+    token1Decimals: number = 8, // cbBTC (actual token1)
+    useCompoundingAPR: boolean = true,
+  ): AerodromeSwapDecimalsPosition {
+    return new AerodromeSwapDecimalsPosition(
+      initialAmount,
+      positionType,
+      initialTick,
+      initialTvl,
+      initialToken0Price,
+      initialToken1Price,
+      totalPoolLiquidity,
+      granularityType,
+      tickSpacing,
+      token0Decimals,
+      token1Decimals,
+      useCompoundingAPR,
+    );
   }
 
   get totalFeesEarned(): number {

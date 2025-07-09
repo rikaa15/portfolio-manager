@@ -23,6 +23,7 @@ const POOL_CONFIGS: Record<string, PoolTestConfig> = {
     positionType: '10%',
     startDate: '2025-06-01',
     endDate: '2025-06-30',
+    useCompoundingAPR: true,
   },
   // ETH/USDC pool (older, more established)
   WETH_USDC: {
@@ -38,6 +39,7 @@ const POOL_CONFIGS: Record<string, PoolTestConfig> = {
     positionType: '10%',
     startDate: '2024-06-01',
     endDate: '2024-07-31',
+    useCompoundingAPR: true,
   },
 };
 
@@ -64,6 +66,9 @@ async function runAerodromeBacktest(
     logger.log(`Initial Investment: $${config.initialAmount.toLocaleString()}`);
     logger.log(`Position Type: ${config.positionType}`);
     logger.log(`Rebalancing: ${enableRebalancing ? 'ENABLED' : 'DISABLED'}`);
+    logger.log(
+      `APR Method: ${config.useCompoundingAPR ? 'Compounded (Weighted)' : 'Simple (Running)'}`,
+    );
     logger.log('');
 
     logger.log(`Fetching pool information...`);
@@ -111,6 +116,7 @@ async function runAerodromeBacktest(
       config.tickSpacing,
       config.token0Decimals,
       config.token1Decimals,
+      config.useCompoundingAPR ?? true,
     );
 
     const positionInfo = position.positionInfo;
@@ -172,9 +178,7 @@ async function runAerodromeBacktest(
         config.initialAmount +
         position.currentPositionFeesEarned;
 
-      const runningAPR = position.getRunningAPR();
-      const weightedPositionAPR =
-        lastRebalanceDay > 0 ? position.getWeightedPositionAPR() : runningAPR;
+      const runningAPR = position.getAPR();
 
       const rangeStatus =
         config.positionType === 'full-range'
@@ -201,14 +205,13 @@ async function runAerodromeBacktest(
           `Fees: $${dailyFees.toFixed(2)} | ` +
           `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `Net APR: ${runningAPR.toFixed(3)}% | ` +
-          `Pos APR: ${weightedPositionAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
+          `APR: ${runningAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
       );
     });
 
     // Enhanced final summary with rebalancing statistics
     const lastDay = timeSeriesData[timeSeriesData.length - 1];
-    const finalNetAPR = position.getRunningAPR();
+    const finalAPR = position.getAPR();
     const finalGrossAPR = position.getGrossAPR();
     const timeInRange = position.getTimeInRange();
 
@@ -222,15 +225,20 @@ async function runAerodromeBacktest(
       );
     }
 
+    const aprMethod = config.useCompoundingAPR
+      ? 'Compounded (Weighted)'
+      : 'Simple (Running)';
+
     logger.log('');
     logger.log('=== APR Analysis ===');
-    logger.log(`Overall Backtest APR (net): ${finalNetAPR.toFixed(2)}%`);
+    logger.log(`${aprMethod} APR: ${finalAPR.toFixed(2)}%`);
+    logger.log(`Overall Backtest APR (net): ${finalAPR.toFixed(2)}%`);
     logger.log(`Overall Backtest APR (gross): ${finalGrossAPR.toFixed(2)}%`);
     logger.log(
       `Weighted Position APR: ${position.getWeightedPositionAPR().toFixed(2)}%`,
     );
     logger.log(
-      `Gas Impact: ${(finalGrossAPR - finalNetAPR).toFixed(2)}% APR reduction`,
+      `Gas Impact: ${(finalGrossAPR - finalAPR).toFixed(2)}% APR reduction`,
     );
     logger.log('');
 
@@ -265,6 +273,7 @@ async function runAerodromeBacktest(
         config.tickSpacing,
         config.token0Decimals,
         config.token1Decimals,
+        config.useCompoundingAPR ?? true,
       );
 
       const concentratedLiquidity = position.positionLiquidityAmount;
@@ -283,7 +292,6 @@ async function runAerodromeBacktest(
       );
       logger.log(`Position Type: ${config.positionType} vs Full-Range`);
 
-      // CHANGE: Add theoretical fee earning potential
       logger.log('');
       logger.log('=== Fee Earning Potential ===');
       logger.log(
@@ -312,6 +320,7 @@ describe('Aerodrome LP Backtesting with Real Fee Growth', () => {
       positionType: '10%' as PositionType,
       startDate: '2025-06-01',
       endDate: '2025-06-30',
+      useCompoundingAPR: true,
     };
     await runAerodromeBacktest(localConfig, true);
     expect(true).toBe(true);
