@@ -69,41 +69,50 @@ export class AppService {
   async bootstrap() {
     this.logger.log('Starting BTC/USDC LP strategy...');
 
-    const lpProvider = this.configService.get('lpProvider');
+    const forceInitialState = this.configService.get('forceInitialState');
+    let lpProvider = this.configService.get('lpProvider');
     const uniswapPositionId = this.configService.get('uniswap').positionId;
     // TODO: add Aerodrome LP positionId
     const aerodromePositionId = this.configService.get('aerodrome').positionId;
-    const lpPositionId =
+    let lpPositionId =
       lpProvider === 'aerodrome' ? aerodromePositionId : uniswapPositionId;
 
     try {
-      const currentState = await this.dataSource.manager.findOne(
-        AppStateEntity,
-        {
-          where: {
-            lpProvider,
+      // Get all config values from env variables, not from DB state
+      if (!forceInitialState) {
+        const currentState = await this.dataSource.manager.findOne(
+          AppStateEntity,
+          {
+            where: {
+              lpProvider,
+            },
+            order: { createdAt: 'DESC' },
           },
-          order: { createdAt: 'DESC' },
-        },
-      );
-
-      if (!currentState) {
-        const newAppState = this.dataSource.manager.create(AppStateEntity, {
-          lpProvider,
-          lpPositionId,
-        });
-        await this.dataSource.manager.save(AppStateEntity, newAppState);
-        this.logger.log(
-          `New app state created: provider=${lpProvider}, positionId=${lpPositionId}`,
         );
-      } else {
+
+        if (!currentState) {
+          const newAppState = this.dataSource.manager.create(AppStateEntity, {
+            lpProvider,
+            lpPositionId,
+          });
+          await this.dataSource.manager.save(AppStateEntity, newAppState);
+          this.logger.log(
+            `New app state created: provider=${lpProvider}, positionId=${lpPositionId}`,
+          );
+        } else {
+          lpProvider = currentState.lpProvider;
+          lpPositionId = currentState.lpPositionId;
+          this.logger.log(
+            `Using existing app state: provider=${lpProvider}, positionId=${lpPositionId}`,
+          );
+        }
       }
 
       this.LP_PROVIDER = lpProvider;
       this.POSITION_ID = lpPositionId;
     } catch (error) {
       this.logger.error(
-        `Failed to start BTC/USDC LP strategy: ${error.message}`,
+        `Failed to boostrap BTC/USDC LP strategy: ${error.message}`,
       );
       throw error;
     }

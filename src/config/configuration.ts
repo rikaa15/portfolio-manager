@@ -19,6 +19,7 @@ export interface BaseConfig {
 export interface Config {
   port: number;
   walletAddress: string;
+  forceInitialState: boolean;
   lpProvider: 'uniswap' | 'aerodrome';
   strategy: {
     lpRebalanceEnabled: boolean;
@@ -61,14 +62,7 @@ export interface Config {
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
-  strategy: {
-    lpRebalanceEnabled: getBooleanEnv('LP_REBALANCING_ENABLED', true),
-    hedgeEnabled: getBooleanEnv('HEDGE_ENABLED', false),
-    lpTargetPositionValue: parseFloat(
-      process.env.LP_TARGET_POSITION_VALUE || '30',
-    ),
-    lpRebalanceRange: parseFloat(process.env.LP_REBALANCE_RANGE || '0.05'),
-  },
+  forceInitialState: getBooleanEnv('FORCE_INITIAL_STATE', false), // always read initial LP position from env, not from database
   lpProvider: (process.env.LP_PROVIDER as 'uniswap' | 'aerodrome') || 'uniswap',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1025094',
@@ -78,6 +72,14 @@ export default (): Config => ({
   aerodrome: {
     poolAddress: process.env.AERODROME_POOL_ADDRESS || '',
     gaugeAddress: process.env.AERODROME_GAUGE_ADDRESS || '',
+  },
+  strategy: {
+    lpRebalanceEnabled: getBooleanEnv('LP_REBALANCING_ENABLED', true),
+    hedgeEnabled: getBooleanEnv('HEDGE_ENABLED', false),
+    lpTargetPositionValue: parseFloat(
+      process.env.LP_TARGET_POSITION_VALUE || '30',
+    ),
+    lpRebalanceRange: parseFloat(process.env.LP_REBALANCE_RANGE || '0.05'),
   },
   ethereum: {
     rpcUrl: process.env.ETH_RPC_URL || '',
