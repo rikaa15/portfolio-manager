@@ -6,6 +6,7 @@ import {
 } from './subgraph.client';
 import { GranularityType, PoolTestConfig, PositionType } from './types';
 import { AerodromeSwapDecimalsPosition } from './aerodrome-defilabs.position';
+import { AerodromeExportService, TsvDataRow } from './aerodrome-export.service';
 import { logger } from './aerodrome.utils';
 
 const POOL_CONFIGS: Record<string, PoolTestConfig> = {
@@ -129,6 +130,9 @@ async function runAerodromeBacktest(
 
     let lastRebalanceDay = 0;
 
+    const exportService = new AerodromeExportService();
+    const tsvData: TsvDataRow[] = [];
+
     // Process each day with enhanced logging
     timeSeriesData.forEach((dataPoint, index) => {
       const dayNumber = index + 1;
@@ -207,6 +211,20 @@ async function runAerodromeBacktest(
           `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
           `APR: ${runningAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
       );
+      tsvData.push({
+        day: dayNumber,
+        date: date,
+        tvl: parseFloat(dataPoint.tvlUSD),
+        value: currentPositionValue,
+        fees: dailyFees,
+        il: impermanentLoss,
+        pnl: totalPnL,
+        apr: runningAPR,
+        gas: position.gasCostsTotal > 0 ? position.gasCostsTotal : undefined,
+        rangeStatus: rangeStatus || 'N/A',
+        rebalanceStatus: rebalanceStatus || 'N/A',
+        tick: config.positionType !== 'full-range' ? currentTick : undefined,
+      });
     });
 
     // Enhanced final summary with rebalancing statistics
@@ -301,6 +319,9 @@ async function runAerodromeBacktest(
         `Liquidity Density: ${concentrationMultiplier.toFixed(2)}x more concentrated`,
       );
     }
+
+    const filename = exportService.generateTsvFilename(config);
+    exportService.exportTsv(filename, tsvData);
   } catch (error: any) {
     if (error.message) {
       logger.error('Aerodrome backtest failed: ' + error.message);
