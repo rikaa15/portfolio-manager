@@ -121,6 +121,7 @@ export interface PoolTestConfig {
   positionType: PositionType;
   startDate: string;
   endDate: string;
+  granularity: GranularityType;
 }
 export interface PoolHourData {
   id: string;
@@ -151,3 +152,4 @@ export interface PaginationInfo {
 }
 
 export type PositionType = 'full-range' | `${number}%`;
+export type GranularityType = 'daily' | 'hourly';

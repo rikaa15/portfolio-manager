@@ -2,6 +2,7 @@
 import axios from 'axios';
 import 'dotenv/config';
 import { PoolDayData, PoolHourData, PoolInfo } from './types';
+import { logger } from './aerodrome.utils';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -128,16 +129,16 @@ async function executeQuery(
     return data.data;
   } catch (error: any) {
     if (error.response) {
-      console.error(
+      logger.error(
         `Query failed: ${error.response.status} ${error.response.statusText}`,
       );
       if (error.response.data) {
-        console.error(`Response: ${JSON.stringify(error.response.data)}`);
+        logger.error(`Response: ${JSON.stringify(error.response.data)}`);
       }
     } else if (error.message) {
-      console.error(`Error: ${error.message}`);
+      logger.error(`Error: ${error.message}`);
     } else {
-      console.error(`Unknown error: ${String(error)}`);
+      logger.error(`Unknown error: ${String(error)}`);
     }
     throw error;
   }
@@ -189,7 +190,7 @@ export async function fetchPoolDayData(
   );
 
   if (!data?.poolDayDatas) {
-    console.error('No pool day data returned from GraphQL query');
+    logger.error('No pool day data returned from GraphQL query');
     return [];
   }
   return data.poolDayDatas;
@@ -209,7 +210,7 @@ export async function fetchPoolHourData(
   const startTimestamp = getUnixTimestamp(startDate);
   const endTimestamp = getUnixTimestamp(endDate);
 
-  console.log(
+  logger.log(
     `Fetching hourly data from ${startDate} to ${endDate} (${startTimestamp} to ${endTimestamp})`,
   );
 
@@ -223,7 +224,7 @@ export async function fetchPoolHourData(
   while (hasMoreData && batchCount < 20) {
     // Safety limit to prevent infinite loops
     batchCount++;
-    console.log(`Fetching batch ${batchCount}, skip: ${skip}`);
+    logger.log(`Fetching batch ${batchCount}, skip: ${skip}`);
 
     try {
       const data = await executeQuery(
@@ -238,7 +239,7 @@ export async function fetchPoolHourData(
       );
 
       if (!data?.poolHourDatas || data.poolHourDatas.length === 0) {
-        console.log('No more hourly data available');
+        logger.log('No more hourly data available');
         hasMoreData = false;
         break;
       }
@@ -246,7 +247,7 @@ export async function fetchPoolHourData(
       const batchData = data.poolHourDatas;
       allHourData.push(...batchData);
 
-      console.log(
+      logger.log(
         `Retrieved ${batchData.length} entries. Total so far: ${allHourData.length}`,
       );
 
@@ -260,13 +261,13 @@ export async function fetchPoolHourData(
       // Small delay to avoid rate limiting
       await new Promise((resolve) => setTimeout(resolve, 100));
     } catch (error) {
-      console.error(`Error fetching batch ${batchCount}:`, error);
+      logger.error(`Error fetching batch ${batchCount}: ${error}`);
       // Continue with what we have rather than failing completely
       hasMoreData = false;
     }
   }
 
-  console.log(
+  logger.log(
     `Completed fetching hourly data. Total entries: ${allHourData.length}`,
   );
 

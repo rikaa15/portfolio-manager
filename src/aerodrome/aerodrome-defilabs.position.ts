@@ -519,10 +519,14 @@ export class AerodromeSwapDecimalsPosition {
     );
   }
 
+  /**
+   * Rebalance the position or close it for final analysis
+   */
   rebalance(
     currentTick: number,
     currentTvl: number,
     gasCost: number = 0,
+    isClosing: boolean = false,
   ): void {
     // Store completed position results for weighted APR calculation
     if (this.currentPositionDataPoints > 0) {
@@ -537,30 +541,29 @@ export class AerodromeSwapDecimalsPosition {
     // Update capital with ONLY earned fees (gas costs paid in native token, not LP tokens)
     this.currentPositionCapital += this.currentPositionFees;
 
-    this.initialBtcPrice = this.currentBtcPrice; // Reset IL baseline
-    // Update position range to current price
-    this.positionRange = this.getPositionTickRange(
-      currentTick,
-      this.positionType,
-      this.tickSpacing,
-    );
+    if (!isClosing) {
+      this.initialBtcPrice = this.currentBtcPrice; // Reset IL baseline
+      // Update position range to current price
+      this.positionRange = this.getPositionTickRange(
+        currentTick,
+        this.positionType,
+        this.tickSpacing,
+      );
+      // Recalculate liquidity units for new position with new capital
+      this.calculateTokensAndLiquidity(
+        this.currentPositionCapital,
+        this.currentBtcPrice,
+      );
+      // Track gas costs separately (for APR calculations only)
+      this.totalGasCosts += gasCost;
 
-    // Recalculate liquidity units for new position with new capital
-    this.calculateTokensAndLiquidity(
-      this.currentPositionCapital,
-      this.currentBtcPrice,
-    );
-
-    // Track gas costs separately (for APR calculations only)
-    this.totalGasCosts += gasCost;
-
+      // Update counters
+      this.rebalanceCount++;
+      this.lastRebalanceDataPoint = this.totalDataPoints;
+    }
     // Reset position tracking for new position
     this.currentPositionDataPoints = 0;
     this.currentPositionFees = 0;
-
-    // Update counters
-    this.rebalanceCount++;
-    this.lastRebalanceDataPoint = this.totalDataPoints;
   }
 
   // Static factory method with proper default decimals
