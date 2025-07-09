@@ -122,7 +122,9 @@ export interface PoolTestConfig {
   startDate: string;
   endDate: string;
   granularity: GranularityType;
+  useCompoundingAPR: boolean;
 }
+
 export interface PoolHourData {
   id: string;
   periodStartUnix: number;

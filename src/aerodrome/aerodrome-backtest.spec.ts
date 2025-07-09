@@ -44,7 +44,10 @@ const POOL_CONFIGS: Record<string, PoolTestConfig> = {
   },
 };
 
-const REBALANCE_COOLDOWN_DAYS = 1;
+const DAILY_OUTPUT_SKIP = 10;
+const HOURLY_OUTPUT_SKIP = 100;
+
+const REBALANCE_COOLDOWN = 1;
 const GAS_COST_PER_REBALANCE = 5;
 
 // Date helpers
@@ -133,7 +136,11 @@ async function runAerodromeBacktest(
     const exportService = new AerodromeExportService();
     const tsvData: TsvDataRow[] = [];
 
-    // Process each day with enhanced logging
+    const skipData =
+      config.granularity === 'hourly' ? HOURLY_OUTPUT_SKIP : DAILY_OUTPUT_SKIP;
+    const totalDataPoints = timeSeriesData.length;
+
+    // Process each data point with enhanced logging
     timeSeriesData.forEach((dataPoint, index) => {
       const dayNumber = index + 1;
       const timestamp =
@@ -155,8 +162,7 @@ async function runAerodromeBacktest(
       let shouldRebalance = false;
       if (enableRebalancing) {
         const isOutOfRange = position.isOutOfRange(currentTick);
-        const canRebalance =
-          dayNumber > lastRebalanceDay + REBALANCE_COOLDOWN_DAYS;
+        const canRebalance = dayNumber > lastRebalanceDay + REBALANCE_COOLDOWN;
         shouldRebalance = isOutOfRange && canRebalance;
       }
 
@@ -202,15 +208,21 @@ async function runAerodromeBacktest(
           ? ` | Gas: $${position.gasCostsTotal.toFixed(0)}`
           : '';
 
-      logger.log(
-        `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
-          `TVL: ${parseFloat(dataPoint.tvlUSD).toFixed(2)} | ` +
-          `Value: $${currentPositionValue.toFixed(2)} | ` +
-          `Fees: $${dailyFees.toFixed(2)} | ` +
-          `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-          `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-          `APR: ${runningAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
-      );
+      const shouldShowInConsole =
+        dayNumber === 1 || // Always show first day
+        dayNumber === totalDataPoints || // Always show last day
+        dayNumber % skipData === 0;
+      if (shouldShowInConsole) {
+        logger.log(
+          `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
+            `TVL: ${parseFloat(dataPoint.tvlUSD).toFixed(2)} | ` +
+            `Value: $${currentPositionValue.toFixed(2)} | ` +
+            `Fees: $${dailyFees.toFixed(2)} | ` +
+            `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
+            `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
+            `APR: ${runningAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
+        );
+      }
       tsvData.push({
         day: dayNumber,
         date: date,

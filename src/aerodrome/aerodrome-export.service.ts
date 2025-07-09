@@ -47,8 +47,16 @@ export class AerodromeExportService {
     const startDate = config.startDate.replace(/-/g, '');
     const endDate = config.endDate.replace(/-/g, '');
 
-    // Include 'aero' prefix for clarity
-    return `aero_${poolName}_${positionType}_${granularity}_${startDate}_${endDate}.tsv`;
+    // Generate timestamp in YYYYMMDD_HHMMSS format
+    const now = new Date();
+    const timestamp = now
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .replace('T', '_')
+      .substring(0, 15); // YYYYMMDD_HHMMSS
+
+    // Include 'aero' prefix and timestamp for uniqueness
+    return `aero_${poolName}_${positionType}_${granularity}_${startDate}_${endDate}_${timestamp}.tsv`;
   }
 
   exportTsv(filename: string, data: TsvDataRow[]): void {
