@@ -2,12 +2,13 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import configuration from './configuration';
 import { validationSchema } from './validation';
+import { typeormConfig } from './typeorm';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [configuration],
+      load: [typeormConfig, configuration],
       validationSchema,
       validationOptions: {
         allowUnknown: true,
@@ -16,4 +17,4 @@ import { validationSchema } from './validation';
     }),
   ],
 })
-export class AppConfigModule {} 
+export class AppConfigModule {}
