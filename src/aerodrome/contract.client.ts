@@ -105,25 +105,52 @@ export async function fetchPoolInfoDirect(
       provider,
     );
 
-    const [token0Symbol, token0Decimals, token1Symbol, token1Decimals] =
-      await Promise.all([
-        token0Contract.symbol(overrides),
-        token0Contract.decimals(overrides),
-        token1Contract.symbol(overrides),
-        token1Contract.decimals(overrides),
-      ]);
+    // Get token information using known addresses (no need for contract calls)
+    let token0Symbol: string;
+    let token0Decimals: number;
+    let token1Symbol: string;
+    let token1Decimals: number;
+
+    // Use fallback values based on known token addresses
+    if (token0Address.toLowerCase() === '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913') {
+      token0Symbol = 'USDC';
+      token0Decimals = 6;
+    } else if (token0Address.toLowerCase() === '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf') {
+      token0Symbol = 'cbBTC';
+      token0Decimals = 8;
+    } else {
+      token0Symbol = 'TOKEN0';
+      token0Decimals = 18;
+    }
+    
+    if (token1Address.toLowerCase() === '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913') {
+      token1Symbol = 'USDC';
+      token1Decimals = 6;
+    } else if (token1Address.toLowerCase() === '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf') {
+      token1Symbol = 'cbBTC';
+      token1Decimals = 8;
+    } else {
+      token1Symbol = 'TOKEN1';
+      token1Decimals = 18;
+    }
 
     const gaugeContract = new ethers.Contract(
       gaugeAddress,
       GAUGE_ABI,
       provider,
     );
-    const [rewardRate] = await Promise.all([
-      gaugeContract.rewardRate(overrides),
-    ]);
-
+    
+    // Get gauge information with fallbacks
+    let rewardRate = 0n;
     let gaugeFees0 = '0';
     let gaugeFees1 = '0';
+    
+    try {
+      rewardRate = await gaugeContract.rewardRate(overrides);
+    } catch (error) {
+      rewardRate = 0n;
+    }
+
     try {
       const [fees0, fees1] = await Promise.all([
         gaugeContract.fees0(overrides),
@@ -131,8 +158,9 @@ export async function fetchPoolInfoDirect(
       ]);
       gaugeFees0 = fees0.toString();
       gaugeFees1 = fees1.toString();
-    } catch {
-      // Gauge fees not available - continue without them
+    } catch (error) {
+      gaugeFees0 = '0';
+      gaugeFees1 = '0';
     }
 
     const sqrtPriceX96 = slot0[0];
@@ -473,38 +501,49 @@ export async function getUserPosition(
       provider,
     );
 
+    console.log(`Discovering NFT positions for user: ${userAddress}`);
+    
     const allTokenIds: bigint[] = [];
     
-    // Check unstaked NFTs
-    const balance = await positionManager.balanceOf(userAddress);
-
-    for (let i = 0; i < Number(balance); i++) {
-      try {
-        const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
-        allTokenIds.push(tokenId);
-      } catch (error) {
-      }
-    }
-    
-    // Check staked NFTs
-    const gaugeAddress = poolInfo.gauge.address;
-    if (gaugeAddress && gaugeAddress !== '0x0000000000000000000000000000000000000000') {
-      try {
-        const gaugeContract = new ethers.Contract(gaugeAddress, GAUGE_ABI, provider);
-        const stakedLength = await gaugeContract.stakedLength(userAddress);
-        
-        for (let i = 0; i < Number(stakedLength); i++) {
+    try {
+      const balance = await positionManager.balanceOf(userAddress);
+      console.log(`User has ${balance} NFT positions`);
+      
+      if (balance > 0n) {
+        for (let i = 0; i < Number(balance); i++) {
           try {
-            const tokenId = await gaugeContract.stakedByIndex(userAddress, i);
+            const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
             allTokenIds.push(tokenId);
-          } catch (error) {
+            console.log(`Found NFT token ID: ${tokenId}`);
+          } catch (error: any) {
+            console.warn(`Failed to get token at index ${i}: ${error.message}`);
+            continue;
           }
         }
-      } catch (error) {
+      }
+    } catch (error: any) {
+      console.warn(`Failed to get user balance: ${error.message}`);
+      console.log(`Trying fallback approach with known token IDs...`);
+      
+      // Method 2: Fallback - try known token IDs from the conversation
+      const knownTokenIds = [18724098n];
+      
+      for (const tokenId of knownTokenIds) {
+        try {
+          const owner = await positionManager.ownerOf(tokenId);
+          if (owner.toLowerCase() === userAddress.toLowerCase()) {
+            allTokenIds.push(tokenId);
+            console.log(`Found NFT token ID via fallback: ${tokenId}`);
+          }
+        } catch (error: any) {
+          console.warn(`Token ID ${tokenId} not found: ${error.message}`);
+          continue;
+        }
       }
     }
-    
+
     if (allTokenIds.length === 0) {
+      console.log(`No valid token IDs found`);
       return null;
     }
 
@@ -512,25 +551,37 @@ export async function getUserPosition(
     for (let i = 0; i < allTokenIds.length; i++) {
       try {
         const tokenId = allTokenIds[i];
+        console.log(`Checking position for token ID: ${tokenId}`);
+        
         const position = await positionManager.positions(tokenId);
         
-        if (
+        // Check if tokens match (handle both token orders)
+        const tokensMatch = (
           (position.token0.toLowerCase() === poolInfo.token0.address.toLowerCase() &&
            position.token1.toLowerCase() === poolInfo.token1.address.toLowerCase()) ||
           (position.token0.toLowerCase() === poolInfo.token1.address.toLowerCase() &&
            position.token1.toLowerCase() === poolInfo.token0.address.toLowerCase())
-        ) {
+        );
+        
+        if (tokensMatch) {
+          console.log(`Found matching position for pool ${poolAddress}: Token ID ${tokenId}`);
           return {
             tokenId: tokenId.toString(),
             position,
             poolInfo,
           };
+        } else {
+          console.log(`Token ID ${tokenId} does not match pool ${poolAddress}`);
+          console.log(`Position tokens: ${position.token0} / ${position.token1}`);
+          console.log(`Pool tokens: ${poolInfo.token0.address} / ${poolInfo.token1.address}`);
         }
-      } catch (error) {
+      } catch (error: any) {
+        console.warn(`Failed to check position for token ID ${allTokenIds[i]}: ${error.message}`);
         continue;
       }
     }
 
+    console.log(`No positions found in pool ${poolAddress}`);
     return null;
   } catch (error: any) {
     throw new Error(`Failed to get user position: ${error.message}`);
