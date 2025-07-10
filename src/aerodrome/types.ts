@@ -121,6 +121,37 @@ export interface PoolTestConfig {
   positionType: PositionType;
   startDate: string;
   endDate: string;
+  granularity: GranularityType;
+  useCompoundingAPR: boolean;
+}
+
+export interface PoolHourData {
+  id: string;
+  periodStartUnix: number;
+  liquidity: string;
+  sqrtPrice: string;
+  token0Price: string;
+  token1Price: string;
+  tick: string;
+  feeGrowthGlobal0X128: string;
+  feeGrowthGlobal1X128: string;
+  tvlUSD: string;
+  volumeToken0: string;
+  volumeToken1: string;
+  volumeUSD: string;
+  feesUSD: string;
+  txCount: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+}
+export interface PaginationInfo {
+  totalEntries: number;
+  batchesFetched: number;
+  lastTimestamp: number;
+  hasMoreData: boolean;
 }
 
 export type PositionType = 'full-range' | `${number}%`;
+export type GranularityType = 'daily' | 'hourly';
