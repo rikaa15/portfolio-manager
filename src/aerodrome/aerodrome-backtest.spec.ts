@@ -4,15 +4,11 @@ import {
   fetchPoolDayData,
   fetchPoolHourData,
 } from './subgraph.client';
-import {
-  GranularityType,
-  PoolTestConfig,
-  PositionType,
-  UnifiedOutputStatus,
-} from './types';
+import { GranularityType, PoolTestConfig, PositionType } from './types';
 import { AerodromeSwapDecimalsPosition } from './aerodrome-defilabs.position';
-import { AerodromeExportService } from './aerodrome-export.service';
-import { logger } from './aerodrome.utils';
+import { ExportUtils } from '../common/utils/report-export.utils';
+import { logger } from '../common/utils/common.utils';
+import { UnifiedOutputStatus } from '../common/types';
 
 const POOL_CONFIGS: Record<string, PoolTestConfig> = {
   // Original cbBTC/USDC pool (newer, March 2025)
@@ -116,6 +112,8 @@ async function runAerodromeBacktest(
       initialToken0Price,
       initialToken1Price,
       totalPoolLiquidity,
+      config.token0Symbol,
+      config.token1Symbol,
       config.granularity,
       config.tickSpacing,
       config.token0Decimals,
@@ -133,7 +131,7 @@ async function runAerodromeBacktest(
 
     let lastRebalanceDay = 0;
 
-    const exportService = new AerodromeExportService();
+    const exportUtils = new ExportUtils('Aerodrome');
     const tsvData: UnifiedOutputStatus[] = [];
 
     const skipData =
@@ -179,8 +177,8 @@ async function runAerodromeBacktest(
         dayNumber % skipData === 0;
 
       if (shouldShowInConsole) {
-        dayNumber === 1 && exportService.printConsoleHeader();
-        logger.log(exportService.formatConsoleRow(positionStatus));
+        dayNumber === 1 && exportUtils.printConsoleHeader();
+        logger.log(exportUtils.formatConsoleRow(positionStatus));
       }
       tsvData.push(positionStatus);
     });
@@ -245,6 +243,8 @@ async function runAerodromeBacktest(
         initialToken0Price,
         initialToken1Price,
         totalPoolLiquidity,
+        config.token0Symbol,
+        config.token1Symbol,
         config.granularity,
         config.tickSpacing,
         config.token0Decimals,
@@ -278,8 +278,12 @@ async function runAerodromeBacktest(
       );
     }
 
-    const filename = exportService.generateTsvFilename(config);
-    exportService.exportTsv(filename, tsvData);
+    const filename = exportUtils.generateTsvFilename(
+      config.token0Symbol,
+      config.token1Symbol,
+      config.granularity,
+    );
+    exportUtils.exportTsv(filename, tsvData);
   } catch (error: any) {
     if (error.message) {
       logger.error('Aerodrome backtest failed: ' + error.message);

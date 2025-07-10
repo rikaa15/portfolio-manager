@@ -2,7 +2,7 @@
 import axios from 'axios';
 import 'dotenv/config';
 import { PoolDayData, PoolHourData, PoolInfo } from './types';
-import { logger } from './aerodrome.utils';
+import { logger } from '../common/utils/common.utils';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 

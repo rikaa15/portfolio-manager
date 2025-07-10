@@ -1,11 +1,11 @@
-import { logger } from './aerodrome.utils';
+import { logger } from '../common/utils/common.utils';
 import {
   PoolDayData,
   PoolHourData,
   PositionRange,
   PositionType,
-  UnifiedOutputStatus,
 } from './types';
+import { UnifiedOutputStatus } from '../common/types';
 
 /**
  * Aerodrome Position class for BTC/stablecoin pairs
@@ -72,6 +72,7 @@ export class AerodromeSwapDecimalsPosition {
 
   private readonly granularityType: 'daily' | 'hourly';
   private readonly useCompoundingAPR: boolean;
+  assetComposition: string;
 
   constructor(
     initialAmount: number,
@@ -81,12 +82,15 @@ export class AerodromeSwapDecimalsPosition {
     initialBtcPrice: number,
     initialToken1Price: number, // Not used but kept for compatibility
     totalPoolLiquidity: number,
+    token0Symbol: string,
+    token1Symbol: string,
     granularityType: 'daily' | 'hourly' = 'daily',
     tickSpacing: number = 2000,
     token0Decimals: number = 6, // USDC (actual token0)
     token1Decimals: number = 8, // cbBTC (actual token1)
     useCompoundingAPR: boolean = true,
   ) {
+    this.assetComposition = `${token0Symbol},${token1Symbol}`;
     this.initialAmount = initialAmount;
     this.currentPositionCapital = initialAmount;
     this.positionType = positionType;
@@ -670,11 +674,6 @@ export class AerodromeSwapDecimalsPosition {
   }
 
   /**
-   * Get current status for unified output reporting
-   * Returns asset composition, asset amounts, and return percentage
-   */
-
-  /**
    * Calculate what the portfolio would be worth if just holding the original token allocation
    * Uses the initial 50/50 USD split converted to current prices
    */
@@ -695,9 +694,6 @@ export class AerodromeSwapDecimalsPosition {
   }
 
   currentStatus(isLastDataPoint: boolean = false): UnifiedOutputStatus {
-    // Asset composition - just the token symbols
-    const assetComposition = 'cbBTC,USDC';
-
     // Asset amounts - current token holdings
     // Format: "btc_amount,usdc_amount"
     const assetAmounts = `${this.btcAmount.toFixed(8)},${this.usdcAmount.toFixed(2)}`;
@@ -738,7 +734,7 @@ export class AerodromeSwapDecimalsPosition {
     }
     return {
       timestamp: this.currentTimestamp,
-      assetComposition,
+      assetComposition: this.assetComposition,
       assetAmounts,
       totalPortfolioValue: totalValue,
       pnl: totalValue - this.initialAmount,
@@ -766,6 +762,8 @@ export class AerodromeSwapDecimalsPosition {
     initialToken0Price: number,
     initialToken1Price: number,
     totalPoolLiquidity: number,
+    token0Symbol: string,
+    token1Symbol: string,
     granularityType: 'daily' | 'hourly' = 'daily',
     tickSpacing: number = 2000,
     token0Decimals: number = 6, // USDC (actual token0)
@@ -780,6 +778,8 @@ export class AerodromeSwapDecimalsPosition {
       initialToken0Price,
       initialToken1Price,
       totalPoolLiquidity,
+      token0Symbol,
+      token1Symbol,
       granularityType,
       tickSpacing,
       token0Decimals,

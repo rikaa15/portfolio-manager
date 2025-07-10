@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PoolTestConfig, UnifiedOutputStatus } from './types';
-import { logger } from './aerodrome.utils';
+import { UnifiedOutputStatus } from '../types';
+import { logger } from './common.utils';
 
+// Column configuration interface
 interface ColumnConfig {
   name: string;
   padEnd: number;
@@ -12,15 +12,12 @@ interface ColumnConfig {
   headerConsole: string;
 }
 
-@Injectable()
-export class AerodromeExportService {
+export class ExportUtils {
   private readonly exportsPath = path.join(process.cwd(), 'exports');
-  private readonly aerodromeExportsPath = path.join(
-    this.exportsPath,
-    'aerodrome',
-  );
+  private readonly protocolExportsPath: string;
 
-  constructor() {
+  constructor(private readonly protocolName: string) {
+    this.protocolExportsPath = path.join(this.exportsPath, protocolName);
     this.ensureExportsFolder();
   }
 
@@ -28,11 +25,12 @@ export class AerodromeExportService {
     if (!fs.existsSync(this.exportsPath)) {
       fs.mkdirSync(this.exportsPath, { recursive: true });
     }
-    if (!fs.existsSync(this.aerodromeExportsPath)) {
-      fs.mkdirSync(this.aerodromeExportsPath, { recursive: true });
+    if (!fs.existsSync(this.protocolExportsPath)) {
+      fs.mkdirSync(this.protocolExportsPath, { recursive: true });
     }
   }
 
+  // Centralized column configuration
   private getColumnConfigs(): ColumnConfig[] {
     return [
       { name: 'timestamp', padEnd: 12, type: 'string', headerConsole: 'time' },
@@ -149,30 +147,12 @@ export class AerodromeExportService {
     ];
   }
 
-  getUnifiedOutputHeaders(): string[] {
+  // Get headers for TSV (full names)
+  getOutputHeaders(): string[] {
     return this.getColumnConfigs().map((col) => col.name);
   }
 
-  getConsoleHeaders(): string[] {
-    return [
-      'timestamp',
-      'assets',
-      'amounts',
-      'value',
-      'pnl',
-      'return%',
-      'vs_hold',
-      'cap_used',
-      'fees',
-      'gas',
-      'max_dd%',
-      'max_gain%',
-      'il%',
-      'rebal',
-      'notes',
-    ];
-  }
-
+  // Print formatted header for console (short names)
   printConsoleHeader(): void {
     const configs = this.getColumnConfigs();
     const headerRow = configs
@@ -183,6 +163,7 @@ export class AerodromeExportService {
     logger.log('-'.repeat(headerRow.length));
   }
 
+  // Format row for console with column configs
   formatConsoleRow(status: UnifiedOutputStatus): string {
     const configs = this.getColumnConfigs();
     const values = this.getStatusValues(status);
@@ -205,6 +186,7 @@ export class AerodromeExportService {
       .join(' | ');
   }
 
+  // Extract values from status in column order
   private getStatusValues(status: UnifiedOutputStatus): (string | number)[] {
     return [
       status.timestamp,
@@ -227,36 +209,9 @@ export class AerodromeExportService {
       status.notes || '',
     ];
   }
-  formatUnifiedOutputRow(status: UnifiedOutputStatus): string[] {
-    return [
-      status.timestamp.toString(),
-      status.assetComposition,
-      status.assetAmounts,
-      status.totalPortfolioValue.toFixed(2),
-      status.pnl.toFixed(2),
-      status.return.toFixed(6),
-      status.netGainVsHold.toFixed(2),
-      status.capitalUsedInTrading.toFixed(2),
-      status.totalCapitalLocked.toFixed(2),
-      status.lpFeesEarned.toFixed(6),
-      status.tradingFeesPaid.toFixed(2),
-      status.gasFeesPaid.toFixed(2),
-      status.maxDrawdown.toFixed(6),
-      status.maxGain.toFixed(6),
-      status.impermanentLoss.toFixed(6),
-      status.assetExposure.toFixed(2),
-      status.rebalancingActions.toString(),
-      status.notes || '',
-    ];
-  }
-  generateTsvFilename(config: PoolTestConfig): string {
-    const poolName = config.poolName.toLowerCase().replace('/', '_');
-    const positionType = config.positionType.replace('%', 'pct');
-    const granularity = config.granularity;
-    const startDate = config.startDate.replace(/-/g, '');
-    const endDate = config.endDate.replace(/-/g, '');
 
-    // Generate timestamp in YYYYMMDD_HHMMSS format
+  // Generate filename with protocol and token parameters
+  generateTsvFilename(...parameters: string[]): string {
     const now = new Date();
     const timestamp = now
       .toISOString()
@@ -264,14 +219,17 @@ export class AerodromeExportService {
       .replace('T', '_')
       .substring(0, 15); // YYYYMMDD_HHMMSS
 
-    // Include 'aero' prefix and timestamp for uniqueness
-    return `aero_${poolName}_${positionType}_${granularity}_${startDate}_${endDate}_${timestamp}.tsv`;
+    // Create filename: [protocolName]_parameter1_parameter2_..._parameterN_timestamp.tsv
+    const parameterString =
+      parameters.length > 0 ? `_${parameters.join('_')}` : '';
+    return `${this.protocolName.toLowerCase()}${parameterString.toLowerCase()}_${timestamp}.tsv`;
   }
 
+  // Export unified output format
   exportTsv(filename: string, data: UnifiedOutputStatus[]): void {
-    const fullPath = path.join(this.aerodromeExportsPath, filename);
+    const fullPath = path.join(this.protocolExportsPath, filename);
 
-    const headers = this.getUnifiedOutputHeaders();
+    const headers = this.getOutputHeaders();
     const configs = this.getColumnConfigs();
 
     // Convert data to TSV format using column configs
