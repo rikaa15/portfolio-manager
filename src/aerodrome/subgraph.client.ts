@@ -224,7 +224,6 @@ export async function fetchPoolHourData(
   while (hasMoreData && batchCount < 20) {
     // Safety limit to prevent infinite loops
     batchCount++;
-    logger.log(`Fetching batch ${batchCount}, skip: ${skip}`);
 
     try {
       const data = await executeQuery(
@@ -246,11 +245,6 @@ export async function fetchPoolHourData(
 
       const batchData = data.poolHourDatas;
       allHourData.push(...batchData);
-
-      logger.log(
-        `Retrieved ${batchData.length} entries. Total so far: ${allHourData.length}`,
-      );
-
       // If we got less than the batch size, we've reached the end
       if (batchData.length < batchSize) {
         hasMoreData = false;

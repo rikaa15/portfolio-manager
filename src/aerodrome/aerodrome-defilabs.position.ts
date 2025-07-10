@@ -4,6 +4,7 @@ import {
   PoolHourData,
   PositionRange,
   PositionType,
+  UnifiedOutputStatus,
 } from './types';
 
 /**
@@ -30,8 +31,10 @@ export class AerodromeSwapDecimalsPosition {
   private totalGasCosts: number = 0;
   private lastRebalanceDataPoint: number = 0;
 
+  private currentWasRebalanced: boolean = false;
   private currentPositionDataPoints: number = 0;
   private currentPositionFees: number = 0;
+  private currentTimestamp: number = 0;
   private positionResults: Array<{
     duration: number;
     fees: number;
@@ -63,6 +66,9 @@ export class AerodromeSwapDecimalsPosition {
   // Logical naming aligned with economic meaning
   private usdcAmount: number = 0; // token0 amount (USDC)
   private btcAmount: number = 0; // token1 amount (cbBTC)
+
+  private maxPortfolioValue: number = 0;
+  private minPortfolioValue: number = Number.MAX_VALUE;
 
   private readonly granularityType: 'daily' | 'hourly';
   private readonly useCompoundingAPR: boolean;
@@ -328,20 +334,22 @@ export class AerodromeSwapDecimalsPosition {
    */
   update(
     dataPoint: PoolDayData | PoolHourData,
-    wasRebalancedToday: boolean = false,
+    wasRebalanced: boolean = false,
   ): number {
     this.totalDataPoints++;
     this.currentPositionDataPoints++;
+    this.currentWasRebalanced = wasRebalanced;
 
     const currentTick = parseInt(dataPoint.tick);
-    const isInRange = !this.isOutOfRange(currentTick) && !wasRebalancedToday;
+    const isInRange = !this.isOutOfRange(currentTick) && !wasRebalanced;
 
     // Update current BTC price
     this.currentBtcPrice = parseFloat(dataPoint.token0Price);
 
-    if (isInRange) {
-      this.dataPointsInRange++;
-    }
+    this.currentTimestamp =
+      this.granularityType === 'daily'
+        ? (dataPoint as PoolDayData).date
+        : (dataPoint as PoolHourData).periodStartUnix * 1000;
 
     // Calculate active liquidity
     const activeLiquidityPercent =
@@ -349,6 +357,7 @@ export class AerodromeSwapDecimalsPosition {
 
     let dataPointFees = 0;
     if (isInRange) {
+      this.dataPointsInRange++;
       try {
         dataPointFees = this.calculateFeesUsingSimplifiedMethod(
           dataPoint,
@@ -362,6 +371,14 @@ export class AerodromeSwapDecimalsPosition {
 
     this.cumulativeFees += dataPointFees;
     this.currentPositionFees += dataPointFees;
+
+    const currentPositionValue = this.getCurrentPositionValue();
+    const totalValue = currentPositionValue + this.cumulativeFees;
+
+    this.maxPortfolioValue = Math.max(this.maxPortfolioValue, totalValue);
+    if (this.maxPortfolioValue > this.initialAmount) {
+      this.minPortfolioValue = Math.min(this.minPortfolioValue, totalValue);
+    }
 
     return dataPointFees;
   }
@@ -652,6 +669,94 @@ export class AerodromeSwapDecimalsPosition {
       : (this.dataPointsInRange / this.totalDataPoints) * 100;
   }
 
+  /**
+   * Get current status for unified output reporting
+   * Returns asset composition, asset amounts, and return percentage
+   */
+
+  /**
+   * Calculate what the portfolio would be worth if just holding the original token allocation
+   * Uses the initial 50/50 USD split converted to current prices
+   */
+  private calculateHoldStrategyValue(): number {
+    // Calculate original token amounts based on initial 50/50 split
+    const initialBtcUsdValue = this.initialAmount / 2;
+    const initialUsdcValue = this.initialAmount / 2;
+
+    // Original token amounts at initial price
+    const originalBtcAmount = initialBtcUsdValue / this.initialBtcPrice;
+    const originalUsdcAmount = initialUsdcValue;
+
+    // Current value of those original holdings
+    const currentBtcValue = originalBtcAmount * this.currentBtcPrice;
+    const currentUsdcValue = originalUsdcAmount; // USDC maintains value
+
+    return currentBtcValue + currentUsdcValue;
+  }
+
+  currentStatus(isLastDataPoint: boolean = false): UnifiedOutputStatus {
+    // Asset composition - just the token symbols
+    const assetComposition = 'cbBTC,USDC';
+
+    // Asset amounts - current token holdings
+    // Format: "btc_amount,usdc_amount"
+    const assetAmounts = `${this.btcAmount.toFixed(8)},${this.usdcAmount.toFixed(2)}`;
+
+    // Return calculation: (current_value + total_fees - initial_investment) / initial_investment * 100
+    const currentPositionValue = this.getCurrentPositionValue();
+    const totalFeesEarned = this.cumulativeFees;
+    const totalValue = currentPositionValue + totalFeesEarned;
+    const returnPercentage =
+      ((totalValue - this.initialAmount) / this.initialAmount) * 100;
+
+    // Net gain vs hold: LP strategy value vs just holding the original 50/50 split
+    const holdStrategyValue = this.calculateHoldStrategyValue();
+    const netGainVsHold = totalValue - holdStrategyValue;
+
+    // Capital used in trading: actual capital deployed in LP position
+    const capitalUsedInTrading = currentPositionValue;
+
+    const maxDrawdown =
+      this.maxPortfolioValue > this.initialAmount
+        ? ((this.maxPortfolioValue - this.minPortfolioValue) /
+            this.maxPortfolioValue) *
+          100
+        : 0;
+
+    // Max gain: largest gain from initial investment as percentage
+    const maxGain =
+      ((this.maxPortfolioValue - this.initialAmount) / this.initialAmount) *
+      100;
+
+    let notes = '';
+    if (this.totalDataPoints === 1) {
+      notes = 'Start';
+    } else if (this.currentWasRebalanced) {
+      notes = 'Rebalanced';
+    } else if (isLastDataPoint) {
+      notes = 'End';
+    }
+    return {
+      timestamp: this.currentTimestamp,
+      assetComposition,
+      assetAmounts,
+      totalPortfolioValue: totalValue,
+      pnl: totalValue - this.initialAmount,
+      return: returnPercentage,
+      netGainVsHold,
+      capitalUsedInTrading,
+      totalCapitalLocked: currentPositionValue,
+      lpFeesEarned: this.cumulativeFees,
+      tradingFeesPaid: 0, // LP doesn't do trading, only rebalancing (which is gas)
+      gasFeesPaid: this.totalGasCosts,
+      maxDrawdown,
+      maxGain,
+      impermanentLoss: this.calculateImpermanentLoss(this.currentBtcPrice),
+      assetExposure: 0, // No hedging in pure LP strategy
+      rebalancingActions: this.rebalanceCount,
+      notes,
+    };
+  }
   // Static factory method with proper default decimals
   static create(
     initialAmount: number,
