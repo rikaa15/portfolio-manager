@@ -97,13 +97,13 @@ export class AppService {
           });
           await this.dataSource.manager.save(AppStateEntity, newAppState);
           this.logger.log(
-            `New app state created: provider=${lpProvider}, positionId=${lpPositionId}`,
+            `[boostrap] New app state created: provider=${lpProvider}, positionId=${lpPositionId}`,
           );
         } else {
           lpProvider = currentState.lpProvider;
           lpPositionId = currentState.lpPositionId;
           this.logger.log(
-            `Using existing app state: provider=${lpProvider}, positionId=${lpPositionId}`,
+            `[boostrap] Using existing app state: provider=${lpProvider}, positionId=${lpPositionId}`,
           );
         }
       }
