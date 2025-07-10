@@ -116,7 +116,6 @@ export class AppService {
       );
       throw error;
     }
-    process.exit(1);
 
     // try {
     //   this.logger.log('Getting realized hedge PnL...');
@@ -155,6 +154,18 @@ export class AppService {
       );
       throw error;
     }
+  }
+
+  private async saveNewPositionId(lpPositionId: string) {
+    const newAppState = this.dataSource.manager.create(AppStateEntity, {
+      lpProvider: this.LP_PROVIDER,
+      lpPositionId,
+    });
+    await this.dataSource.manager.save(AppStateEntity, newAppState);
+    this.POSITION_ID = lpPositionId;
+    this.logger.log(
+      `New position ID saved: ${lpPositionId}, provider=${this.LP_PROVIDER}`,
+    );
   }
 
   private async monitorPosition() {
@@ -958,11 +969,7 @@ export class AppService {
     // Add new liquidity with adjusted range
     const newPositionId =
       await this.uniswapLpService.addLiquidity(addLiquidityParams);
-    this.POSITION_ID = newPositionId;
-    this.logger.log(
-      `LP: Successfully added new liquidity, position ID: ${newPositionId}`,
-    );
-
+    await this.saveNewPositionId(newPositionId);
     // Update rebalancing state
     this.lastLpRebalance = Date.now();
 
