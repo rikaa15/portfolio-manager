@@ -6,7 +6,7 @@ import configuration from '../config/configuration';
 import {
   calculatePositionAmounts,
   checkGaugeStaking,
-  getUserStakedPosition,
+  getAllUserPositionsForPool,
 } from './contract.client';
 import { AerodromeLiquidityPosition } from './types';
 
@@ -67,64 +67,82 @@ export class AerodromeLpService {
   async getPosition(
     userAddress: string,
     poolAddress: string,
-  ): Promise<AerodromeLiquidityPosition | null> {
+  ): Promise<AerodromeLiquidityPosition[]> {
     try {
       this.logger.log(
-        `Fetching Aerodrome LP position for user ${userAddress} in pool ${poolAddress}...`,
+        `Fetching all Aerodrome LP positions for user ${userAddress} in pool ${poolAddress}...`,
       );
 
-      const userPosition = await getUserStakedPosition(
-        userAddress,
-        poolAddress,
-        this.config.contracts.positionManager,
-        this.provider,
-      );
-
-      if (!userPosition) {
-        this.logger.log(
-          `No staked positions found for user ${userAddress} in pool ${poolAddress}`,
+      const { stakedPositions, unstakedPositions } =
+        await getAllUserPositionsForPool(
+          userAddress,
+          poolAddress,
+          this.config.contracts.positionManager,
+          this.provider,
         );
-        return null;
+
+      const allUserPositions = [...stakedPositions, ...unstakedPositions];
+
+      if (allUserPositions.length === 0) {
+        return [];
       }
 
-      const { token0Balance, token1Balance } = await calculatePositionAmounts(
-        poolAddress,
-        userPosition.position,
-        userPosition.poolInfo,
-        this.provider,
+      // Process positions with Promise.all for better performance
+      const positions = await Promise.all(
+        allUserPositions.map(async (userPosition) => {
+          const { token0Balance, token1Balance } =
+            await calculatePositionAmounts(
+              poolAddress,
+              userPosition.position,
+              userPosition.poolInfo,
+              this.provider,
+            );
+
+          // Determine staking status from which array the position came from
+          const isStaked = stakedPositions.some(
+            (p) => p.tokenId === userPosition.tokenId,
+          );
+
+          // Only check gauge for pending rewards if staked
+          const pendingRewards = isStaked
+            ? (
+                await checkGaugeStaking(
+                  userAddress,
+                  userPosition.tokenId,
+                  userPosition.poolInfo.gauge.address,
+                  this.provider,
+                )
+              ).pendingRewards
+            : '0';
+
+          return {
+            userAddress,
+            poolAddress,
+            tokenId: userPosition.tokenId,
+            token0Balance,
+            token1Balance,
+            token0Symbol: userPosition.poolInfo.token0.symbol,
+            token1Symbol: userPosition.poolInfo.token1.symbol,
+            liquidityAmount: userPosition.position.liquidity.toString(),
+            isStaked,
+            pendingAeroRewards: pendingRewards,
+            tickLower: userPosition.position.tickLower.toString(),
+            tickUpper: userPosition.position.tickUpper.toString(),
+            uncollectedFees0: ethers.formatUnits(
+              userPosition.position.tokensOwed0,
+              parseInt(userPosition.poolInfo.token0.decimals),
+            ),
+            uncollectedFees1: ethers.formatUnits(
+              userPosition.position.tokensOwed1,
+              parseInt(userPosition.poolInfo.token1.decimals),
+            ),
+          } as AerodromeLiquidityPosition;
+        }),
       );
 
-      const { isStaked, pendingRewards } = await checkGaugeStaking(
-        userAddress,
-        userPosition.tokenId,
-        userPosition.poolInfo.gauge.address,
-        this.provider,
-      );
-
-      const result: AerodromeLiquidityPosition = {
-        userAddress,
-        poolAddress,
-        tokenId: userPosition.tokenId,
-        token0Balance,
-        token1Balance,
-        token0Symbol: userPosition.poolInfo.token0.symbol,
-        token1Symbol: userPosition.poolInfo.token1.symbol,
-        liquidityAmount: userPosition.position.liquidity.toString(),
-        isStaked,
-        pendingAeroRewards: pendingRewards,
-      };
-
-      this.logger.log('=== AERODROME POSITION FOUND ===');
-      this.logger.log(`Token ID: ${userPosition.tokenId}`);
-      this.logger.log(
-        `Liquidity: ${token0Balance} ${userPosition.poolInfo.token0.symbol} + ${token1Balance} ${userPosition.poolInfo.token1.symbol}`,
-      );
-      this.logger.log(`Staked: ${result.isStaked}`);
-      this.logger.log(`Pending AERO rewards: ${pendingRewards}`);
-
-      return result;
+      return positions;
     } catch (error: any) {
-      this.logger.error(`Failed to get position: ${error.message}`);
+      this.logger.error(`Failed to get positions: ${error.message}`);
       throw error;
     }
   }
@@ -141,8 +159,7 @@ export class AerodromeLpService {
       );
 
       const knownPools = this.config.contracts.pools;
-
-      const positions: AerodromeLiquidityPosition[] = [];
+      const allPositions: AerodromeLiquidityPosition[] = [];
 
       const positionPromises = knownPools.map((poolAddress) =>
         this.getPosition(userAddress, poolAddress),
@@ -152,7 +169,7 @@ export class AerodromeLpService {
 
       results.forEach((result, index) => {
         if (result.status === 'fulfilled' && result.value) {
-          positions.push(result.value);
+          allPositions.push(...result.value);
         } else if (result.status === 'rejected') {
           this.logger.warn(
             `Could not check pool ${knownPools[index]}: ${result.reason?.message}`,
@@ -160,8 +177,8 @@ export class AerodromeLpService {
         }
       });
 
-      this.logger.log(`Total positions found: ${positions.length}`);
-      return positions;
+      this.logger.log(`Total positions found: ${allPositions.length}`);
+      return allPositions;
     } catch (error: any) {
       this.logger.error(
         `Failed to get positions for user ${userAddress}: ${error.message}`,
@@ -173,60 +190,61 @@ export class AerodromeLpService {
     return this.signer.getAddress();
   }
 }
-// async function main() {
-//   try {
-//     console.log('Testing Aerodrome getPosition method...');
 
-//     const config = configuration();
-//     const configService = new ConfigService<Config>(config);
+async function main() {
+  try {
+    console.log('Testing Aerodrome getPosition method...');
 
-//     // Create aerodrome service instance
-//     const aerodromeService = new AerodromeLpService(configService);
-//     await aerodromeService.bootstrap();
+    const config = configuration();
+    const configService = new ConfigService<Config>(config);
 
-//     const userAddress = process.env.WALLET_ADDRESS ?? '';
-//     const poolAddress = config.base.contracts.pools[0];
+    // Create aerodrome service instance
+    const aerodromeService = new AerodromeLpService(configService);
+    await aerodromeService.bootstrap();
 
-//     console.log(`Testing with wallet: ${userAddress}`);
-//     console.log(`Testing with pool: ${poolAddress}`);
+    const userAddress = process.env.WALLET_ADDRESS ?? '';
+    const poolAddress = config.base.contracts.pools[0];
 
-//     // Test individual position
-//     const position = await aerodromeService.getPosition(
-//       userAddress,
-//       poolAddress,
-//     );
+    console.log(`Testing with wallet: ${userAddress}`);
+    console.log(`Testing with pool: ${poolAddress}`);
 
-//     if (position) {
-//       console.log('Single position found:');
-//       console.log(JSON.stringify(position, null, 2));
-//     } else {
-//       console.log('No position found for this wallet in the specified pool');
-//     }
+    // Test individual position
+    const position = await aerodromeService.getPosition(
+      userAddress,
+      poolAddress,
+    );
 
-//     console.log('\n=== Testing getPositionsByOwner ===');
-//     const allPositions =
-//       await aerodromeService.getPositionsByOwner(userAddress);
+    if (position) {
+      console.log('Single position found:');
+      console.log(JSON.stringify(position, null, 2));
+    } else {
+      console.log('No position found for this wallet in the specified pool');
+    }
 
-//     if (allPositions.length > 0) {
-//       console.log(`Found ${allPositions.length} total positions:`);
-//       allPositions.forEach((pos, index) => {
-//         console.log(`\nPosition ${index + 1}:`);
-//         console.log(`  Pool: ${pos.token0Symbol}/${pos.token1Symbol}`);
-//         console.log(
-//           `  Liquidity: ${pos.token0Balance} ${pos.token0Symbol} + ${pos.token1Balance} ${pos.token1Symbol}`,
-//         );
-//         console.log(`  Staked: ${pos.isStaked}`);
-//         console.log(`  Pending AERO: ${pos.pendingAeroRewards}`);
-//       });
-//     } else {
-//       console.log('No positions found for this wallet');
-//     }
-//   } catch (error: any) {
-//     console.error(`Test failed: ${error.message}`);
-//     throw error;
-//   }
-// }
+    console.log('\n=== Testing getPositionsByOwner ===');
+    const allPositions =
+      await aerodromeService.getPositionsByOwner(userAddress);
 
-// if (require.main === module) {
-//   main().catch(console.error);
-// }
+    if (allPositions.length > 0) {
+      console.log(`Found ${allPositions.length} total positions:`);
+      allPositions.forEach((pos, index) => {
+        console.log(`\nPosition ${index + 1}:`);
+        console.log(`  Pool: ${pos.token0Symbol}/${pos.token1Symbol}`);
+        console.log(
+          `  Liquidity: ${pos.token0Balance} ${pos.token0Symbol} + ${pos.token1Balance} ${pos.token1Symbol}`,
+        );
+        console.log(`  Staked: ${pos.isStaked}`);
+        console.log(`  Pending AERO: ${pos.pendingAeroRewards}`);
+      });
+    } else {
+      console.log('No positions found for this wallet');
+    }
+  } catch (error: any) {
+    console.error(`Test failed: ${error.message}`);
+    throw error;
+  }
+}
+
+if (require.main === module) {
+  main().catch(console.error);
+}

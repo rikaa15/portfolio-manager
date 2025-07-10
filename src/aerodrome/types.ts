@@ -25,6 +25,10 @@ export interface AerodromeLiquidityPosition {
   liquidityAmount: string;
   isStaked: boolean;
   pendingAeroRewards?: string;
+  tickLower: string;
+  tickUpper: string;
+  uncollectedFees0: string;
+  uncollectedFees1: string;
 }
 
 export interface ContractPoolInfo {

@@ -29,6 +29,9 @@ const GAUGE_ABI = [
 
 const POSITION_MANAGER_ABI = [
   'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, int24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
+  'function balanceOf(address owner) external view returns (uint256)',
+  'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
+  'function ownerOf(uint256 tokenId) external view returns (address)',
 ];
 
 function calculatePricesFromSqrtPrice(
@@ -302,10 +305,6 @@ export async function getPoolCurrentTick(
   return Number(slot0.tick);
 }
 
-/**
- * Get user's staked position in a specific pool
- * Returns the tokenId and position details if found
- */
 export async function getUserStakedPosition(
   userAddress: string,
   poolAddress: string,
@@ -352,6 +351,110 @@ export async function getUserStakedPosition(
     };
   } catch (error: any) {
     throw new Error(`Failed to get user staked position: ${error.message}`);
+  }
+}
+
+export async function getUserUnstakedPositions(
+  userAddress: string,
+  poolAddress: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+): Promise<
+  Array<{
+    tokenId: string;
+    position: any;
+    poolInfo: ContractPoolInfo;
+  }>
+> {
+  try {
+    // Get pool info first
+    const poolInfo = await fetchPoolInfoDirect(poolAddress, provider);
+
+    // Get Position Manager contract
+    const positionManager = new ethers.Contract(
+      positionManagerAddress,
+      POSITION_MANAGER_ABI,
+      provider,
+    );
+
+    // Get total number of NFTs owned by user (these are unstaked)
+    const balance = await positionManager.balanceOf(userAddress);
+
+    if (balance === 0n) {
+      return [];
+    }
+
+    // Get all NFT token IDs owned by user
+    const unstakedPositions: Array<{
+      tokenId: string;
+      position: any;
+      poolInfo: ContractPoolInfo;
+    }> = [];
+
+    for (let i = 0; i < Number(balance); i++) {
+      const tokenId = await positionManager.tokenOfOwnerByIndex(userAddress, i);
+      const position = await positionManager.positions(tokenId);
+
+      // Check if this position belongs to our target pool
+      if (
+        position.token0.toLowerCase() ===
+          poolInfo.token0.address.toLowerCase() &&
+        position.token1.toLowerCase() === poolInfo.token1.address.toLowerCase()
+      ) {
+        unstakedPositions.push({
+          tokenId: tokenId.toString(),
+          position,
+          poolInfo,
+        });
+      }
+    }
+
+    return unstakedPositions;
+  } catch (error: any) {
+    throw new Error(`Failed to get user unstaked positions: ${error.message}`);
+  }
+}
+
+export async function getAllUserPositionsForPool(
+  userAddress: string,
+  poolAddress: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+): Promise<{
+  stakedPositions: Array<{
+    tokenId: string;
+    position: any;
+    poolInfo: ContractPoolInfo;
+  }>;
+  unstakedPositions: Array<{
+    tokenId: string;
+    position: any;
+    poolInfo: ContractPoolInfo;
+  }>;
+}> {
+  try {
+    // Get staked positions from gauge
+    const stakedPosition = await getUserStakedPosition(
+      userAddress,
+      poolAddress,
+      positionManagerAddress,
+      provider,
+    );
+
+    // Get unstaked positions from user's wallet
+    const unstakedPositions = await getUserUnstakedPositions(
+      userAddress,
+      poolAddress,
+      positionManagerAddress,
+      provider,
+    );
+
+    return {
+      stakedPositions: stakedPosition ? [stakedPosition] : [],
+      unstakedPositions: unstakedPositions,
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get all user positions: ${error.message}`);
   }
 }
 
