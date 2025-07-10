@@ -5,12 +5,15 @@ Application for managing and hedging Uniswap V3 liquidity positions with perpetu
 ## Overview
 
 This application helps you:
-- Manage WBTC/USDC Uniswap V3 liquidity positions
+- Manage Uniswap V3 / Aerodrome liquidity positions
 - Monitor position metrics and collect fees
 - Hedge impermanent loss using Hyperliquid perpetual futures
 - Automate position management and risk mitigation
 
 ## Tests
-```
-npm run test app.service
+
+Aerodrome LP backtesting script:
+
+```shell
+npm run test aerodrome-backtest
 ```
