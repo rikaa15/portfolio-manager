@@ -33,6 +33,9 @@ describe('AerodromeLpService Integration Tests', () => {
     }).compile();
 
     service = module.get<AerodromeLpService>(AerodromeLpService);
+    
+    // Initialize the service properly
+    await service.bootstrap();
   });
 
   it('should get position for user and pool', async () => {
@@ -43,7 +46,7 @@ describe('AerodromeLpService Integration Tests', () => {
 
     console.log('Position result:', position);
     expect(position).toBeDefined();
-  });
+  }, 30000);
 
   it('should get all positions by owner', async () => {
     const userAddress = process.env.WALLET_ADDRESS;
@@ -53,5 +56,5 @@ describe('AerodromeLpService Integration Tests', () => {
     console.log(`Positions owned by ${userAddress}:`, positions);
     expect(positions).toBeDefined();
     expect(Array.isArray(positions)).toBe(true);
-  });
+  }, 30000);
 });
