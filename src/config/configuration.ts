@@ -13,6 +13,7 @@ export interface BaseConfig {
 export interface Config {
   port: number;
   walletAddress: string;
+  lpProvider: string;
   uniswap: {
     positionId: string;
     positionCreationDate: string;
@@ -40,6 +41,7 @@ export interface Config {
 export default (): Config => ({
   port: parseInt(process.env.PORT || '3000', 10),
   walletAddress: process.env.WALLET_ADDRESS || '',
+  lpProvider: process.env.LP_PROVIDER || 'uniswap',
   uniswap: {
     positionId: process.env.UNISWAP_POSITION_ID || '1016832',
     positionCreationDate: process.env.UNISWAP_POSITION_CREATION_DATE || '2025-06-25',

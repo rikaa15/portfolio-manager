@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { UniswapLpService } from './uniswap-lp/uniswap-lp.service';
 import { HyperliquidService } from './hyperliquid/hyperliquid.service';
+import { AerodromeLpService } from './aerodrome/aerodrome.service';
 import { ConfigService } from '@nestjs/config';
 import { Config } from './config/configuration';
 import { ethers } from 'ethers';
@@ -11,6 +12,7 @@ import * as moment from 'moment';
 export class AppService {
   private readonly logger = new Logger(AppService.name);
   private WBTC_USDC_POSITION_ID: string;
+  private AERODROME_POSITION_ID: string;
   private readonly MONITORING_INTERVAL = 10 * 60 * 1000; // 10 minutes (was 60 minutes)
   private readonly FEE_COLLECTION_THRESHOLD = 100 // 100 USDC worth of fees
   private readonly FEE_COLLECTION_GAS_THRESHOLD = 5 // 5 USDC worth of gas fees
@@ -50,6 +52,11 @@ export class AppService {
   private readonly LP_REBALANCE_MAX_SIZE = 0.20; // 20% max position change per rebalance
   private readonly LP_REBALANCE_BOUNDARY_THRESHOLD = 0.02; // 2% from range boundary
 
+  // Aerodrome LP Rebalancing state
+  private lastAerodromeLpRebalance = 0;
+  private aerodromeLpRebalanceCount = 0;
+  private aerodromeOutOfRangeStartTime: number | null = null;
+
   // Strategy state
   private outOfRangeStartTime: number | null = null;
   private monitoringInterval: NodeJS.Timeout;
@@ -66,9 +73,12 @@ export class AppService {
     private readonly uniswapLpService: UniswapLpService,
     private readonly hyperliquidService: HyperliquidService,
     private readonly fundingService: FundingService,
+    private readonly aerodromeService: AerodromeLpService,
     private readonly configService: ConfigService<Config>,
   ) {
     this.WBTC_USDC_POSITION_ID = this.configService.get('uniswap').positionId;
+    // For now¸use the first position found for Aerodrome
+    this.AERODROME_POSITION_ID = '';
   }
 
   async bootstrap() {
@@ -113,14 +123,38 @@ export class AppService {
         currentPrice
       }`);
 
-      // Check if LP position needs rebalancing based on price position
-      // try {
-      //   this.logger.log('Checking LP rebalancing...');
-      //   await this.checkLpRebalancing(currentPrice, position);
-      // } catch (error) {
-      //   this.logger.error(`Error checking LP rebalancing: ${error.message}`);
-      //   throw error;
-      // }
+      const lpProvider = this.configService.get('lpProvider');
+      try {
+        this.logger.log(`Checking ${lpProvider} LP rebalancing...`);
+        
+        if (lpProvider === 'aerodrome') {
+          const userAddress = await this.aerodromeService.getSignerAddress();
+          const positions = await this.aerodromeService.getPositionsByOwner(userAddress);
+          
+          if (positions.length === 0) {
+            this.logger.log('No Aerodrome positions found');
+            return;
+          }
+
+          const aerodromePosition = positions[0];
+          this.AERODROME_POSITION_ID = aerodromePosition.tokenId;
+          
+          this.logger.log(`Monitoring Aerodrome position ${aerodromePosition.tokenId}:
+            Pool: ${aerodromePosition.token0Symbol}/${aerodromePosition.token1Symbol}
+            Liquidity: ${aerodromePosition.liquidityAmount}
+            Token0 Balance: ${aerodromePosition.token0Balance}
+            Token1 Balance: ${aerodromePosition.token1Balance}
+            Is Staked: ${aerodromePosition.isStaked}
+            Tick Range: ${aerodromePosition.tickLower} to ${aerodromePosition.tickUpper}
+          `);
+
+          await this.checkAerodromeLpRebalancing(currentPrice, aerodromePosition);
+        } else {
+          await this.checkUniswapLpRebalancing(currentPrice, position);
+        }
+      } catch (error) {
+        this.logger.error(`Error checking ${lpProvider} LP rebalancing: ${error.message}`);
+      }
 
       // Calculate impermanent loss
       const impermanentLoss = this.calculateImpermanentLoss(currentPrice, initialPrice);
@@ -405,11 +439,19 @@ export class AppService {
       } catch (error) {
         this.logger.error(`Error collecting fees: ${error.message}`);
       }
+
+      // Monitor Aerodrome LP position
+      // try {
+      //   this.logger.log('Checking Aerodrome LP position...');
+      //   await this.monitorAerodromePosition(currentPrice);
+      // } catch (error) {
+      //   this.logger.error(`Error monitoring Aerodrome position: ${error.message}`);
+      // }
     } catch (error) {
       this.logger.error(`Error monitoring position: ${error.message}`);
     }
   }
-  
+
   private calculateImpermanentLoss(
     currentToken0Price: number,
     initialToken0Price: number,
@@ -447,7 +489,7 @@ export class AppService {
       }
   }
 
-  private async checkLpRebalancing(currentPrice: number, position: any) {
+  private async checkUniswapLpRebalancing(currentPrice: number, position: any) {
     // Get current position range
     const tickLower = Number(position.tickLower);
     const tickUpper = Number(position.tickUpper);
@@ -457,7 +499,7 @@ export class AppService {
     const tokensDecimalsDelta = Math.abs(position.token0.decimals - position.token1.decimals);
     const lowerPrice = 1.0001 ** tickLower * Math.pow(10, tokensDecimalsDelta);
     const upperPrice = 1.0001 ** tickUpper * Math.pow(10, tokensDecimalsDelta);
-    this.logger.log(`LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`);
+    this.logger.log(`Uniswap LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`);
 
     // Calculate price position within current range
     const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
@@ -465,7 +507,7 @@ export class AppService {
     // Check cooldown period
     const timeSinceLastRebalance = Date.now() - this.lastLpRebalance;
     if (timeSinceLastRebalance < this.LP_REBALANCE_COOLDOWN) {
-      this.logger.log('LP rebalancing still in cooldown period');
+      this.logger.log('Uniswap LP rebalancing still in cooldown period');
       return; // Still in cooldown period
     }
 
@@ -481,9 +523,9 @@ export class AppService {
       rebalancingNeeded = true;
       rebalancingAction = 'boundary_rebalance';
       newRangePercent = 0.10; // Current price ± 10%
-      this.logger.log(`LP rebalancing triggered: Price near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+      this.logger.log(`Uniswap LP rebalancing triggered: Price near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
     } else {
-      this.logger.log(`LP rebalancing not needed: Price not near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+      this.logger.log(`Uniswap LP rebalancing not needed: Price not near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
     }
     
     // Scenario 2: Price out of range (>1 hour)
@@ -497,7 +539,7 @@ export class AppService {
         rebalancingNeeded = true;
         rebalancingAction = 'out_of_range_rebalance';
         newRangePercent = 0.10; // Current price ± 10%
-        this.logger.log(`LP rebalancing triggered: Price out of range for >1 hour`);
+        this.logger.log(`Uniswap LP rebalancing triggered: Price out of range for >1 hour`);
       }
     } else {
       this.outOfRangeStartTime = null;
@@ -507,15 +549,15 @@ export class AppService {
       rebalancingNeeded = true;
     }
 
-    this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
+    this.logger.log(`Uniswap LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
 
     if (rebalancingNeeded) {
-      await this.executeLpRebalancing(currentPrice, newRangePercent, rebalancingAction);
+      await this.executeUniswapLpRebalancing(currentPrice, newRangePercent, rebalancingAction);
     }
   }
 
-  private async executeLpRebalancing(currentPrice: number, newRangePercent: number, action: string) {
-    this.logger.log(`Executing LP rebalancing: ${action}`);
+  private async executeUniswapLpRebalancing(currentPrice: number, newRangePercent: number, action: string) {
+    this.logger.log(`Executing Uniswap LP rebalancing: ${action}`);
     
     // Get current position
     const position = await this.uniswapLpService.getPosition(this.WBTC_USDC_POSITION_ID);
@@ -530,7 +572,7 @@ export class AppService {
     const newTickLower = Math.floor(Math.log(newLowerPrice) / Math.log(1.0001));
     const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
 
-    this.logger.log(`Rebalancing LP position:
+    this.logger.log(`Rebalancing Uniswap LP position:
       Current range: ${(1.0001 ** Number(position.tickLower)).toFixed(2)} - ${(1.0001 ** Number(position.tickUpper)).toFixed(2)}
       New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
       Action: ${action}
@@ -538,7 +580,7 @@ export class AppService {
 
     if(Number(position.liquidity) > 0) {
       // Remove current liquidity
-      this.logger.log('LP: Removing current liquidity...');
+      this.logger.log('Uniswap LP: Removing current liquidity...');
       const removeLiquidityTxHash = await this.uniswapLpService.removeLiquidity({
         tokenId: this.WBTC_USDC_POSITION_ID,
         liquidity: position.liquidity,
@@ -546,16 +588,16 @@ export class AppService {
         amount1Min: 0,
         deadline: Math.floor(Date.now() / 1000) + 3600,
       });
-      this.logger.log(`LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`);
+      this.logger.log(`Uniswap LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`);
 
-      this.logger.log('LP: Collecting fees...');
+      this.logger.log('Uniswap LP: Collecting fees...');
       const collectFeesTxHash = await this.uniswapLpService.collectFees({
         tokenId: this.WBTC_USDC_POSITION_ID,
         recipient: await this.uniswapLpService.getSignerAddress(),
         amount0Max: ethers.parseUnits('10000000', 6),
         amount1Max: ethers.parseUnits('10000000', 6),
       });
-      this.logger.log(`Fees collected: ${collectFeesTxHash}`);
+      this.logger.log(`Uniswap LP: Fees collected: ${collectFeesTxHash}`);
     }
 
     // Calculate new liquidity amounts based on target position value
@@ -590,18 +632,107 @@ export class AppService {
     // Add new liquidity with adjusted range
     const tokenId = await this.uniswapLpService.addLiquidity(addLiquidityParams);
     this.WBTC_USDC_POSITION_ID = tokenId;
-    this.logger.log(`LP: Successfully added new liquidity, token ID: ${tokenId}`);
+    this.logger.log(`Uniswap LP: Successfully added new liquidity, token ID: ${tokenId}`);
 
     // Update rebalancing state
     this.lastLpRebalance = Date.now();
     this.lpRebalanceCount++;
 
-    this.logger.log(`LP rebalancing completed successfully:
+    this.logger.log(`Uniswap LP rebalancing completed successfully:
       Action: ${action}
       New WBTC amount: ${newWbtcAmount.toFixed(6)}
       New USDC amount: ${newUsdcAmount.toFixed(2)}
       Total rebalances: ${this.lpRebalanceCount}
     `);
+  }
+
+  private async checkAerodromeLpRebalancing(currentPrice: number, position: any) {
+    const tickLower = Number(position.tickLower);
+    const tickUpper = Number(position.tickUpper);
+    
+    const lowerPrice = Math.pow(1.0001, tickLower);
+    const upperPrice = Math.pow(1.0001, tickUpper);
+    
+    this.logger.log(`Aerodrome LP Lower price: ${lowerPrice}, upper price: ${upperPrice}, current price: ${currentPrice}`);
+
+    const pricePosition = (currentPrice - lowerPrice) / (upperPrice - lowerPrice);
+
+    const timeSinceLastRebalance = Date.now() - this.lastAerodromeLpRebalance;
+    if (timeSinceLastRebalance < this.LP_REBALANCE_COOLDOWN) {
+      this.logger.log('Aerodrome LP rebalancing still in cooldown period');
+      return;
+    }
+
+    let rebalancingNeeded = false;
+    let rebalancingAction = '';
+
+    if (
+      pricePosition <= this.LP_REBALANCE_BOUNDARY_THRESHOLD ||
+      pricePosition >= (1 - this.LP_REBALANCE_BOUNDARY_THRESHOLD)
+    ) {
+      rebalancingNeeded = true;
+      rebalancingAction = 'boundary_rebalance';
+      this.logger.log(`Aerodrome LP rebalancing triggered: Price near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+    } else {
+      this.logger.log(`Aerodrome LP rebalancing not needed: Price not near range boundary (${(pricePosition * 100).toFixed(1)}% of range)`);
+    }
+    
+    const isLiquidityZero = Number(position.liquidityAmount) === 0;
+    const isOutOfRange = currentPrice < lowerPrice || currentPrice > upperPrice;
+
+    if (isOutOfRange) {
+      if (!this.aerodromeOutOfRangeStartTime) {
+        this.aerodromeOutOfRangeStartTime = Date.now();
+      } else if (Date.now() - this.aerodromeOutOfRangeStartTime > 60 * 60 * 1000) {
+        rebalancingNeeded = true;
+        rebalancingAction = 'out_of_range_rebalance';
+        this.logger.log(`Aerodrome LP rebalancing triggered: Price out of range for >1 hour`);
+      }
+    } else {
+      this.aerodromeOutOfRangeStartTime = null;
+    }
+
+    if (isLiquidityZero) {
+      rebalancingNeeded = true;
+      rebalancingAction = 'zero_liquidity_rebalance';
+    }
+
+    this.logger.log(`Aerodrome LP rebalancing needed: ${rebalancingNeeded}, action: ${rebalancingAction}`);
+
+    if (rebalancingNeeded) {
+      await this.executeAerodromeLpRebalancing(rebalancingAction, position);
+    }
+  }
+
+  private async executeAerodromeLpRebalancing(action: string, position: any) {
+    this.logger.log(`Executing Aerodrome LP rebalancing: ${action}`);
+    
+    try {
+      if (Number(position.liquidityAmount) > 0) {
+        this.logger.log('Aerodrome LP: Removing current liquidity...');
+        const removeLiquidityTxHash = await this.aerodromeService.removeLiquidity(
+          position.tokenId,
+          position.liquidityAmount,
+          position.poolAddress,
+        );
+        this.logger.log(`Aerodrome LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`);
+      }
+
+      this.logger.log('Aerodrome LP: Collecting fees...');
+      const collectFeesTxHash = await this.aerodromeService.collectFees(position.tokenId);
+      this.logger.log(`Aerodrome LP: Fees collected: ${collectFeesTxHash}`);
+
+      this.lastAerodromeLpRebalance = Date.now();
+      this.aerodromeLpRebalanceCount++;
+
+      this.logger.log(`Aerodrome LP rebalancing completed successfully:
+        Action: ${action}
+        Total rebalances: ${this.aerodromeLpRebalanceCount}
+      `);
+    } catch (error) {
+      this.logger.error(`Failed to execute Aerodrome LP rebalancing: ${error.message}`);
+      throw error;
+    }
   }
 
   private async exitPosition() {

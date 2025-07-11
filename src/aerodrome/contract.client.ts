@@ -32,6 +32,8 @@ const POSITION_MANAGER_ABI = [
   'function balanceOf(address owner) external view returns (uint256)',
   'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
   'function ownerOf(uint256 tokenId) external view returns (address)',
+  'function decreaseLiquidity(tuple(uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external returns (uint256 amount0, uint256 amount1)',
+  'function collect(tuple(uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external returns (uint256 amount0, uint256 amount1)',
 ];
 
 function calculatePricesFromSqrtPrice(
@@ -538,3 +540,109 @@ export const getGaugeInfo = async (
     return { isStaked: false, pendingRewards: '0' };
   }
 };
+
+/**
+ * Remove liquidity from a position
+ */
+export async function removeLiquidity(
+  tokenId: string,
+  liquidity: string,
+  poolAddress: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+  signer: any,
+): Promise<string> {
+  const positionManager = new ethers.Contract(
+    positionManagerAddress,
+    POSITION_MANAGER_ABI,
+    signer,
+  );
+
+  const positionData = await positionManager.positions(BigInt(tokenId));
+  
+  const {
+    2: token0Address,
+    3: token1Address,
+    4: fee,
+    5: tickLower,
+    6: tickUpper,
+    7: currentLiquidity,
+    10: tokensOwed0,
+    11: tokensOwed1,
+  } = positionData;
+
+  const liquidityToRemove = BigInt(liquidity);
+  
+  if (liquidityToRemove > currentLiquidity) {
+    throw new Error(
+      `Cannot remove ${liquidity} liquidity. Position only has ${currentLiquidity.toString()} liquidity available.`
+    );
+  }
+  
+  const poolContract = new ethers.Contract(
+    poolAddress,
+    ['function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)'],
+    provider
+  );
+  const slot0 = await poolContract.slot0();
+  const currentTick = Number(slot0.tick);
+  
+  const { amount0, amount1 } = calculateTokenAmounts(
+    liquidityToRemove,
+    BigInt(tickLower),
+    BigInt(tickUpper),
+    currentTick
+  );
+  
+  // Apply 2% slippage tolerance
+  const slippageTolerance = 98n; // 98% = 2% slippage
+  const amount0Min = (amount0 * slippageTolerance) / 100n;
+  const amount1Min = (amount1 * slippageTolerance) / 100n;
+
+  const params = {
+    tokenId: BigInt(tokenId),
+    liquidity: liquidityToRemove,
+    amount0Min: amount0Min,
+    amount1Min: amount1Min,
+    deadline: BigInt(Math.floor(Date.now() / 1000) + 1800), // 30 minutes
+  };
+
+  const tx = await positionManager.decreaseLiquidity(params);
+  const receipt = await tx.wait();
+  return receipt.hash;
+}
+
+/**
+ * Collect fees from a position
+ */
+export async function collectFees(
+  tokenId: string,
+  recipient: string,
+  positionManagerAddress: string,
+  provider: JsonRpcProvider,
+  signer: any,
+): Promise<string> {
+  const positionManager = new ethers.Contract(
+    positionManagerAddress,
+    POSITION_MANAGER_ABI,
+    signer,
+  );
+
+  const positionData = await positionManager.positions(BigInt(tokenId));
+  
+  const {
+    10: tokensOwed0,
+    11: tokensOwed1,
+  } = positionData;
+
+  const params = {
+    tokenId: BigInt(tokenId),
+    recipient: recipient,
+    amount0Max: tokensOwed0,
+    amount1Max: tokensOwed1,
+  };
+
+  const tx = await positionManager.collect(params);
+  const receipt = await tx.wait();
+  return receipt.hash;
+}

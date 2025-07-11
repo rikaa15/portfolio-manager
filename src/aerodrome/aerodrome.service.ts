@@ -7,6 +7,8 @@ import {
   calculatePositionAmounts,
   checkGaugeStaking,
   getAllUserPositionsForPool,
+  removeLiquidity,
+  collectFees,
 } from './contract.client';
 import { AerodromeLiquidityPosition } from './types';
 
@@ -188,6 +190,58 @@ export class AerodromeLpService {
   }
   async getSignerAddress(): Promise<string> {
     return this.signer.getAddress();
+  }
+
+  /**
+   * Remove liquidity from a position
+   */
+  async removeLiquidity(
+    tokenId: string,
+    liquidity: string,
+    poolAddress: string,
+  ): Promise<string> {
+    try {
+      this.logger.log(`Removing liquidity from position ${tokenId}...`);
+      
+      const txHash = await removeLiquidity(
+        tokenId,
+        liquidity,
+        poolAddress,
+        this.config.contracts.positionManager,
+        this.provider,
+        this.signer,
+      );
+      
+      this.logger.log(`Successfully removed liquidity: ${txHash}`);
+      return txHash;
+    } catch (error: any) {
+      this.logger.error(`Failed to remove liquidity: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Collect fees from a position
+   */
+  async collectFees(tokenId: string): Promise<string> {
+    try {
+      this.logger.log(`Collecting fees from position ${tokenId}...`);
+      
+      const recipient = await this.getSignerAddress();
+      const txHash = await collectFees(
+        tokenId,
+        recipient,
+        this.config.contracts.positionManager,
+        this.provider,
+        this.signer,
+      );
+      
+      this.logger.log(`Successfully collected fees: ${txHash}`);
+      return txHash;
+    } catch (error: any) {
+      this.logger.error(`Failed to collect fees: ${error.message}`);
+      throw error;
+    }
   }
 }
 
