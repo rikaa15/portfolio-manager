@@ -106,9 +106,10 @@ export default (): Config => ({
       positionManager: '0x827922686190790b37229fd06084350E74485b72',
       pools: [
         process.env.AERODROME_POOL_ADDRESS, // User's specific pool from env
-        '0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb', // cbBTC/USDC (volatile)
-        '0x1F40e42E92Cd3dDEC8Ac7d950A4E15378a0A7d8e', // WETH/USDC (volatile)
-        '0x0b1A513ee24972DAEf112bC777a5610d4325C9e7', // cbBTC/WBTC (stable)
+        '0x3e66e55e97ce60096f74b7C475e8249f2D31a9fb', // cbBTC/USDC (volatile 2000)
+        '0x4e962BB3889Bf030368F56810A9c96B83CB3E778', // cbBTC/USDC (volatile 100)
+        // '0x1F40e42E92Cd3dDEC8Ac7d950A4E15378a0A7d8e', // WETH/USDC (volatile)
+        // '0x0b1A513ee24972DAEf112bC777a5610d4325C9e7', // cbBTC/WBTC (stable)
       ]
         .filter(Boolean)
         .filter((pool, index, arr) => arr.indexOf(pool) === index), // Remove duplicates and empty values
