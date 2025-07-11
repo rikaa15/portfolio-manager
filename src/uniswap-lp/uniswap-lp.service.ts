@@ -154,6 +154,9 @@ export class UniswapLpService {
     token1Symbol: string;
   }> {
     try {
+      // Add a small delay to reduce rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       const targetPoolAddress = poolAddress || this.uniswapConfig.poolAddress;
 
       const poolInfo = await fetchPoolInfoDirect(

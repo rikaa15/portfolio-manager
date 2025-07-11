@@ -547,7 +547,6 @@ export const getGaugeInfo = async (
 export async function removeLiquidity(
   tokenId: string,
   liquidity: string,
-  poolAddress: string,
   positionManagerAddress: string,
   provider: JsonRpcProvider,
   signer: any,
@@ -558,46 +557,19 @@ export async function removeLiquidity(
     signer,
   );
 
-  const positionData = await positionManager.positions(BigInt(tokenId));
-  
-  const {
-    2: token0Address,
-    3: token1Address,
-    4: fee,
-    5: tickLower,
-    6: tickUpper,
-    7: currentLiquidity,
-    10: tokensOwed0,
-    11: tokensOwed1,
-  } = positionData;
-
+  const position = await positionManager.positions(BigInt(tokenId));
+  const currentLiquidity = position[7];
   const liquidityToRemove = BigInt(liquidity);
   
-  if (liquidityToRemove > currentLiquidity) {
-    throw new Error(
-      `Cannot remove ${liquidity} liquidity. Position only has ${currentLiquidity.toString()} liquidity available.`
-    );
-  }
+  const liquidityRatio = liquidityToRemove * 10000n / currentLiquidity;
   
-  const poolContract = new ethers.Contract(
-    poolAddress,
-    ['function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)'],
-    provider
-  );
-  const slot0 = await poolContract.slot0();
-  const currentTick = Number(slot0.tick);
+  // Estimate current token amounts
+  const tokensOwed0 = position[10];
+  const tokensOwed1 = position[11];
   
-  const { amount0, amount1 } = calculateTokenAmounts(
-    liquidityToRemove,
-    BigInt(tickLower),
-    BigInt(tickUpper),
-    currentTick
-  );
-  
-  // Apply 2% slippage tolerance
   const slippageTolerance = 98n; // 98% = 2% slippage
-  const amount0Min = (amount0 * slippageTolerance) / 100n;
-  const amount1Min = (amount1 * slippageTolerance) / 100n;
+  const amount0Min = (tokensOwed0 * liquidityRatio * slippageTolerance) / (10000n * 100n);
+  const amount1Min = (tokensOwed1 * liquidityRatio * slippageTolerance) / (10000n * 100n);
 
   const params = {
     tokenId: BigInt(tokenId),
@@ -628,12 +600,9 @@ export async function collectFees(
     signer,
   );
 
-  const positionData = await positionManager.positions(BigInt(tokenId));
-  
-  const {
-    10: tokensOwed0,
-    11: tokensOwed1,
-  } = positionData;
+  const position = await positionManager.positions(BigInt(tokenId));
+  const tokensOwed0 = position[10];
+  const tokensOwed1 = position[11];
 
   const params = {
     tokenId: BigInt(tokenId),

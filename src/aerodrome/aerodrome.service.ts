@@ -195,18 +195,13 @@ export class AerodromeLpService {
   /**
    * Remove liquidity from a position
    */
-  async removeLiquidity(
-    tokenId: string,
-    liquidity: string,
-    poolAddress: string,
-  ): Promise<string> {
+  async removeLiquidity(tokenId: string, liquidity: string): Promise<string> {
     try {
       this.logger.log(`Removing liquidity from position ${tokenId}...`);
       
       const txHash = await removeLiquidity(
         tokenId,
         liquidity,
-        poolAddress,
         this.config.contracts.positionManager,
         this.provider,
         this.signer,
