@@ -219,10 +219,15 @@ export class ExportUtils {
       .replace('T', '_')
       .substring(0, 15); // YYYYMMDD_HHMMSS
 
+    // Clean parameters: remove dashes, replace % to pct, convert to lowercase
+    const cleanedParameters = parameters.map((param) =>
+      param.toLowerCase().replace(/-/g, '').replace(/%/g, 'pct'),
+    );
+
     // Create filename: [protocolName]_parameter1_parameter2_..._parameterN_timestamp.tsv
     const parameterString =
-      parameters.length > 0 ? `_${parameters.join('_')}` : '';
-    return `${this.protocolName.toLowerCase()}${parameterString.toLowerCase()}_${timestamp}.tsv`;
+      cleanedParameters.length > 0 ? `_${cleanedParameters.join('_')}` : '';
+    return `${this.protocolName.toLowerCase()}${parameterString}_${timestamp}.tsv`;
   }
 
   // Export unified output format

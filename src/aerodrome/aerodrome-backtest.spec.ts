@@ -281,6 +281,9 @@ async function runAerodromeBacktest(
     const filename = exportUtils.generateTsvFilename(
       config.token0Symbol,
       config.token1Symbol,
+      config.startDate,
+      config.endDate,
+      config.positionType,
       config.granularity,
     );
     exportUtils.exportTsv(filename, tsvData);
