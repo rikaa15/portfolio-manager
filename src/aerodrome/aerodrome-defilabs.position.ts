@@ -739,6 +739,7 @@ export class AerodromeSwapDecimalsPosition {
       totalPortfolioValue: totalValue,
       pnl: totalValue - this.initialAmount,
       return: returnPercentage,
+      apr: this.getAPR(),
       netGainVsHold,
       capitalUsedInTrading,
       totalCapitalLocked: currentPositionValue,

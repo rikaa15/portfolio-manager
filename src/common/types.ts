@@ -5,6 +5,7 @@ export interface UnifiedOutputStatus {
   totalPortfolioValue: number; // Combined value of all assets (LP position, hedge PnL, etc.)
   pnl: number; // Absolute profit/loss since inception in USD
   return: number; // Cumulative return as percentage of starting capital
+  apr: number;
   netGainVsHold: number; // Total profit/loss of strategy compared to holding the assets
   capitalUsedInTrading: number; // Actual capital actively deployed (including margin/collateral for hedges)
   totalCapitalLocked: number; // All capital locked in LP, hedge collateral, and buffers

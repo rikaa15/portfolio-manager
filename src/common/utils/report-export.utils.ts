@@ -68,6 +68,13 @@ export class ExportUtils {
         headerConsole: 'return%',
       },
       {
+        name: 'apr',
+        padEnd: 8,
+        type: 'number',
+        fixed: 3,
+        headerConsole: 'apr%',
+      },
+      {
         name: 'net_gain_vs_hold',
         padEnd: 8,
         type: 'number',
@@ -195,6 +202,7 @@ export class ExportUtils {
       status.totalPortfolioValue,
       status.pnl,
       status.return,
+      status.apr,
       status.netGainVsHold,
       status.capitalUsedInTrading,
       status.totalCapitalLocked,
