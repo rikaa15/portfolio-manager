@@ -6,8 +6,9 @@ import {
 } from './subgraph.client';
 import { GranularityType, PoolTestConfig, PositionType } from './types';
 import { AerodromeSwapDecimalsPosition } from './aerodrome-defilabs.position';
-import { AerodromeExportService, TsvDataRow } from './aerodrome-export.service';
-import { logger } from './aerodrome.utils';
+import { ExportUtils } from '../common/utils/report-export.utils';
+import { logger } from '../common/utils/common.utils';
+import { UnifiedOutputStatus } from '../common/types';
 
 const POOL_CONFIGS: Record<string, PoolTestConfig> = {
   // Original cbBTC/USDC pool (newer, March 2025)
@@ -49,11 +50,6 @@ const HOURLY_OUTPUT_SKIP = 100;
 
 const REBALANCE_COOLDOWN = 1;
 const GAS_COST_PER_REBALANCE = 5;
-
-// Date helpers
-const formatDate = (unixTimestamp: number): string => {
-  return new Date(unixTimestamp * 1000).toISOString().split('T')[0];
-};
 
 async function runAerodromeBacktest(
   config: PoolTestConfig,
@@ -116,6 +112,8 @@ async function runAerodromeBacktest(
       initialToken0Price,
       initialToken1Price,
       totalPoolLiquidity,
+      config.token0Symbol,
+      config.token1Symbol,
       config.granularity,
       config.tickSpacing,
       config.token0Decimals,
@@ -133,8 +131,8 @@ async function runAerodromeBacktest(
 
     let lastRebalanceDay = 0;
 
-    const exportService = new AerodromeExportService();
-    const tsvData: TsvDataRow[] = [];
+    const exportUtils = new ExportUtils('Aerodrome');
+    const tsvData: UnifiedOutputStatus[] = [];
 
     const skipData =
       config.granularity === 'hourly' ? HOURLY_OUTPUT_SKIP : DAILY_OUTPUT_SKIP;
@@ -143,20 +141,12 @@ async function runAerodromeBacktest(
     // Process each data point with enhanced logging
     timeSeriesData.forEach((dataPoint, index) => {
       const dayNumber = index + 1;
-      const timestamp =
-        config.granularity === 'daily'
-          ? dataPoint.date
-          : dataPoint.periodStartUnix;
-
-      const date = formatDate(timestamp);
 
       const currentTick = parseInt(dataPoint.tick);
       // const alignedTick =
       //   Math.floor(currentTick / position.positionInfo.tickSpacing) *
       //   position.positionInfo.tickSpacing;
       const currentTVL = parseFloat(dataPoint.tvlUSD);
-
-      const isInRangeBeforeRebalance = !position.isOutOfRange(currentTick);
 
       // Check if rebalancing is needed (strategy logic in backtesting script)
       let shouldRebalance = false;
@@ -174,69 +164,23 @@ async function runAerodromeBacktest(
       }
 
       // Update position state for this day
-      const dailyFees = position.update(dataPoint, shouldRebalance);
+      position.update(dataPoint, shouldRebalance);
 
-      const currentPositionValue = position.getCurrentPositionValue();
-
-      const currentToken0Price = parseFloat(dataPoint.token0Price);
-      const impermanentLoss =
-        position.calculateImpermanentLoss(currentToken0Price);
-
-      // Calculate total PnL (net of gas costs)
-      const totalPnL =
-        currentPositionValue -
-        config.initialAmount +
-        position.currentPositionFeesEarned;
-
-      const runningAPR = position.getAPR();
-
-      const rangeStatus =
-        config.positionType === 'full-range'
-          ? ''
-          : isInRangeBeforeRebalance
-            ? ' [IN-RANGE]'
-            : ' [OUT-OF-RANGE]';
-
-      const rebalanceStatus =
-        enableRebalancing && shouldRebalance ? ' [REBALANCED]' : '';
-
-      const tickInfo =
-        config.positionType !== 'full-range' ? ` | Tick: ${currentTick}` : '';
-
-      const gasInfo =
-        position.gasCostsTotal > 0
-          ? ` | Gas: $${position.gasCostsTotal.toFixed(0)}`
-          : '';
+      // get current positionstatus
+      const positionStatus = position.currentStatus(
+        dayNumber === totalDataPoints,
+      );
 
       const shouldShowInConsole =
         dayNumber === 1 || // Always show first day
         dayNumber === totalDataPoints || // Always show last day
         dayNumber % skipData === 0;
+
       if (shouldShowInConsole) {
-        logger.log(
-          `Day ${dayNumber.toString().padStart(3)} (${date}): ` +
-            `TVL: ${parseFloat(dataPoint.tvlUSD).toFixed(2)} | ` +
-            `Value: $${currentPositionValue.toFixed(2)} | ` +
-            `Fees: $${dailyFees.toFixed(2)} | ` +
-            `IL: ${impermanentLoss >= 0 ? '+' : ''}${impermanentLoss.toFixed(2)}% | ` +
-            `PnL: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | ` +
-            `APR: ${runningAPR.toFixed(3)}%${gasInfo}${rangeStatus}${rebalanceStatus}${tickInfo}`,
-        );
+        dayNumber === 1 && exportUtils.printConsoleHeader();
+        logger.log(exportUtils.formatConsoleRow(positionStatus));
       }
-      tsvData.push({
-        day: dayNumber,
-        date: date,
-        tvl: parseFloat(dataPoint.tvlUSD),
-        value: currentPositionValue,
-        fees: dailyFees,
-        il: impermanentLoss,
-        pnl: totalPnL,
-        apr: runningAPR,
-        gas: position.gasCostsTotal > 0 ? position.gasCostsTotal : undefined,
-        rangeStatus: rangeStatus || 'N/A',
-        rebalanceStatus: rebalanceStatus || 'N/A',
-        tick: config.positionType !== 'full-range' ? currentTick : undefined,
-      });
+      tsvData.push(positionStatus);
     });
 
     // Enhanced final summary with rebalancing statistics
@@ -299,6 +243,8 @@ async function runAerodromeBacktest(
         initialToken0Price,
         initialToken1Price,
         totalPoolLiquidity,
+        config.token0Symbol,
+        config.token1Symbol,
         config.granularity,
         config.tickSpacing,
         config.token0Decimals,
@@ -332,8 +278,15 @@ async function runAerodromeBacktest(
       );
     }
 
-    const filename = exportService.generateTsvFilename(config);
-    exportService.exportTsv(filename, tsvData);
+    const filename = exportUtils.generateTsvFilename(
+      config.token0Symbol,
+      config.token1Symbol,
+      config.startDate,
+      config.endDate,
+      config.positionType,
+      config.granularity,
+    );
+    exportUtils.exportTsv(filename, tsvData);
   } catch (error: any) {
     if (error.message) {
       logger.error('Aerodrome backtest failed: ' + error.message);
@@ -351,7 +304,7 @@ describe('Aerodrome LP Backtesting with Real Fee Growth', () => {
       granularity: 'hourly' as GranularityType,
       initialAmount: 10000,
       positionType: '10%' as PositionType,
-      startDate: '2025-06-01',
+      startDate: '2025-06-29',
       endDate: '2025-06-30',
       useCompoundingAPR: true,
     };

@@ -58,18 +58,6 @@ export function getPositionTickRange(
   }
 }
 
-export const logger = {
-  log: (message: string) => {
-    process.stdout.write(message + '\n');
-  },
-  warn: (message: string) => {
-    process.stdout.write(message + '\n');
-  },
-  error: (message: string) => {
-    process.stderr.write(message + '\n');
-  },
-};
-
 /**
  * Check if position is active (earning fees) at current tick
  */

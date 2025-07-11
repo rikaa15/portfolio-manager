@@ -2,7 +2,7 @@
 import axios from 'axios';
 import 'dotenv/config';
 import { PoolDayData, PoolHourData, PoolInfo } from './types';
-import { logger } from './aerodrome.utils';
+import { logger } from '../common/utils/common.utils';
 
 const SUBGRAPH_API_KEY = process.env.SUBGRAPH_API_KEY;
 
@@ -224,7 +224,6 @@ export async function fetchPoolHourData(
   while (hasMoreData && batchCount < 20) {
     // Safety limit to prevent infinite loops
     batchCount++;
-    logger.log(`Fetching batch ${batchCount}, skip: ${skip}`);
 
     try {
       const data = await executeQuery(
@@ -246,11 +245,6 @@ export async function fetchPoolHourData(
 
       const batchData = data.poolHourDatas;
       allHourData.push(...batchData);
-
-      logger.log(
-        `Retrieved ${batchData.length} entries. Total so far: ${allHourData.length}`,
-      );
-
       // If we got less than the batch size, we've reached the end
       if (batchData.length < batchSize) {
         hasMoreData = false;
