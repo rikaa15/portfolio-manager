@@ -681,6 +681,7 @@ export class AppService {
       }
 
       return {
+        tokenId: position.tokenId,
         token0BalanceRaw: btcBalanceRaw,
         token1BalanceRaw: usdcBalanceRaw,
         token0Balance: `${btcBalance} ${btcSymbol}`,
@@ -756,6 +757,16 @@ export class AppService {
   }
 
   private async checkLpRebalancing(currentPrice: number, position: any) {
+    const lpProvider = this.configService.get('lpProvider');
+    
+    if (lpProvider === 'aerodrome') {
+      await this.checkLpAerodromeRebalancing(currentPrice, position);
+    } else {
+      await this.checkLpUniswapRebalancing(currentPrice, position);
+    }
+  }
+
+  private async checkLpUniswapRebalancing(currentPrice: number, position: any) {
     const { lpTargetPositionValue, lpRebalanceRange } =
       this.configService.get('strategy');
 
@@ -808,12 +819,73 @@ export class AppService {
     this.logger.log(`LP rebalancing needed: ${rebalancingNeeded}`);
 
     if (rebalancingNeeded) {
-      await this.executeLpRebalancing(currentPrice, rebalancingAction);
+      await this.executeLpUniswapRebalancing(currentPrice, rebalancingAction);
     }
   }
 
-  private async executeLpRebalancing(currentPrice: number, action: string) {
-    this.logger.log(`Executing LP rebalancing: ${action}`);
+  private async checkLpAerodromeRebalancing(currentPrice: number, position: any) {
+    //use later for swap
+    const { lpTargetPositionValue, lpRebalanceRange } =
+      this.configService.get('strategy');
+
+    // Check cooldown period
+    const timeSinceLastRebalance = Date.now() - this.lastLpRebalance;
+    if (timeSinceLastRebalance < 1000 * 60) {
+      this.logger.log('LP rebalancing still in cooldown period');
+      return; // Still in cooldown period
+    }
+
+    let rebalancingNeeded = false;
+    let rebalancingAction = '';
+
+    const signerAddress = await this.aerodromeService.getSignerAddress();
+    const poolAddress = this.configService.get('aerodrome').poolAddress;
+
+    const positionForRangeCheck = {
+      userAddress: signerAddress,
+      poolAddress: poolAddress,
+      tokenId: position.tokenId,
+      token0Balance: position.token0Balance,
+      token1Balance: position.token1Balance,
+      token0Symbol: position.token0.symbol,
+      token1Symbol: position.token1.symbol,
+      liquidityAmount: position.liquidity,
+      isStaked: position.isStaked,
+      pendingAeroRewards: position.pendingRewards,
+      token0Fees: position.token0Fees,
+      token1Fees: position.token1Fees,
+    };
+    
+    const rangeCheck = await this.aerodromeService.isPositionOutOfRange(
+      positionForRangeCheck
+    );
+
+    this.logger.log(
+      `Aerodrome LP Current tick: ${rangeCheck.currentTick}, Position range: ${rangeCheck.tickLower} to ${rangeCheck.tickUpper}, Out of range: ${rangeCheck.isOutOfRange}`,
+    );
+
+    const isLiquidityZero = Number(position.liquidity) === 0;
+    const isOutOfRange = rangeCheck.isOutOfRange;
+
+    if (isOutOfRange) {
+      rebalancingNeeded = true;
+      rebalancingAction = 'out_of_range_rebalance';
+      this.logger.log(`Aerodrome LP rebalancing triggered: Price out of range`);
+    }
+
+    if (isLiquidityZero) {
+      rebalancingNeeded = true;
+    }
+
+    this.logger.log(`Aerodrome LP rebalancing needed: ${rebalancingNeeded}`);
+
+    if (rebalancingNeeded) {
+      await this.executeLpAerodromeRebalancing(currentPrice, rebalancingAction, positionForRangeCheck);
+    }
+  }
+
+  private async executeLpUniswapRebalancing(currentPrice: number, action: string) {
+    this.logger.log(`Executing Uniswap LP rebalancing: ${action}`);
 
     const { lpTargetPositionValue, lpRebalanceRange } =
       this.configService.get('strategy');
@@ -836,7 +908,7 @@ export class AppService {
     // Convert prices to ticks
     const newTickUpper = Math.ceil(Math.log(newUpperPrice) / Math.log(1.0001));
 
-    this.logger.log(`Rebalancing LP position:
+    this.logger.log(`Rebalancing Uniswap LP position:
       Current range: ${lowerPrice.toFixed(2)} - ${upperPrice.toFixed(2)}
       New range: ${newLowerPrice.toFixed(2)} - ${newUpperPrice.toFixed(2)}
       Action: ${action}
@@ -844,7 +916,7 @@ export class AppService {
 
     if (Number(position.liquidity) > 0) {
       // Remove current liquidity
-      this.logger.log('LP: Removing current liquidity...');
+      this.logger.log('Uniswap LP: Removing current liquidity...');
       const removeLiquidityTxHash = await this.uniswapLpService.removeLiquidity(
         {
           tokenId: this.POSITION_ID,
@@ -855,17 +927,17 @@ export class AppService {
         },
       );
       this.logger.log(
-        `LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`,
+        `Uniswap LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`,
       );
 
-      this.logger.log('LP: Collecting fees...');
+      this.logger.log('Uniswap LP: Collecting fees...');
       const collectFeesTxHash = await this.uniswapLpService.collectFees({
         tokenId: this.POSITION_ID,
         recipient: await this.uniswapLpService.getSignerAddress(),
         amount0Max: ethers.parseUnits('10000000', 6),
         amount1Max: ethers.parseUnits('10000000', 6),
       });
-      this.logger.log(`Fees collected: ${collectFeesTxHash}`);
+      this.logger.log(`Uniswap fees collected: ${collectFeesTxHash}`);
     }
 
     // Calculate new liquidity amounts based on target position value
@@ -896,7 +968,7 @@ export class AppService {
       deadline: Math.floor(Date.now() / 1000) + 3600,
     };
 
-    this.logger.log(`Adding new liquidity:
+    this.logger.log(`Adding new Uniswap liquidity:
       New WBTC amount: ${newWbtcAmount.toFixed(position.token0.decimals)} (${addLiquidityParams.amount0Desired})
       New USDC amount: ${newUsdcAmount.toFixed(position.token1.decimals)} (${addLiquidityParams.amount1Desired})
       Ticks: [${addLiquidityParams.tickLower}, ${addLiquidityParams.tickUpper}]
@@ -909,17 +981,88 @@ export class AppService {
       await this.uniswapLpService.addLiquidity(addLiquidityParams);
     this.POSITION_ID = newPositionId;
     this.logger.log(
-      `LP: Successfully added new liquidity, position ID: ${newPositionId}`,
+      `Uniswap LP: Successfully added new liquidity, position ID: ${newPositionId}`,
     );
 
     // Update rebalancing state
     this.lastLpRebalance = Date.now();
 
-    this.logger.log(`LP rebalancing completed successfully:
+    this.logger.log(`Uniswap LP rebalancing completed successfully:
       Action: ${action}
       New WBTC amount: ${newWbtcAmount.toFixed(6)}
       New USDC amount: ${newUsdcAmount.toFixed(2)}
       LP position ID: ${newPositionId}
+    `);
+  }
+
+  private async executeLpAerodromeRebalancing(currentPrice: number, action: string, positionData?: any) {
+    this.logger.log(`Executing Aerodrome LP rebalancing: ${action}`);
+
+    const { lpTargetPositionValue, lpRebalanceRange } =
+      this.configService.get('strategy');
+
+    let position;
+    if (positionData) {
+      position = {
+        tokenId: positionData.tokenId,
+        userAddress: positionData.userAddress,
+        poolAddress: positionData.poolAddress,
+        token0Balance: positionData.token0Balance,
+        token1Balance: positionData.token1Balance,
+        token0Symbol: positionData.token0Symbol,
+        token1Symbol: positionData.token1Symbol,
+        liquidityAmount: positionData.liquidityAmount,
+        isStaked: positionData.isStaked,
+        pendingAeroRewards: positionData.pendingAeroRewards,
+        token0Fees: positionData.token0Fees,
+        token1Fees: positionData.token1Fees,
+      };
+    } else {
+      const signerAddress = await this.aerodromeService.getSignerAddress();
+      const poolAddress = this.configService.get('aerodrome').poolAddress;
+      position = await this.aerodromeService.getPosition(signerAddress, poolAddress);
+    }
+
+    if (!position) {
+      throw new Error('No Aerodrome position found to rebalance');
+    }
+
+    let rangeCheck;
+    if (positionData) {
+      rangeCheck = await this.aerodromeService.isPositionOutOfRange(
+        positionData
+      );
+    }
+
+    if (Number(position.liquidityAmount) > 0) {
+      this.logger.log('Aerodrome LP: Removing current liquidity...');
+      const removeLiquidityTxHash = await this.aerodromeService.removeLiquidity({
+        tokenId: position.tokenId,
+        liquidity: position.liquidityAmount,
+        amount0Min: 0,
+        amount1Min: 0,
+        deadline: Math.floor(Date.now() / 1000) + 3600,
+      });
+      this.logger.log(
+        `Aerodrome LP: Successfully removed current liquidity: ${removeLiquidityTxHash}`,
+      );
+
+      this.logger.log('Aerodrome LP: Collecting fees...');
+      const collectFeesTxHash = await this.aerodromeService.collectFees({
+        tokenId: position.tokenId,
+        recipient: position.userAddress,
+        amount0Max: ethers.parseUnits('10000000', 6),
+        amount1Max: ethers.parseUnits('10000000', 6),
+      });
+      this.logger.log(`Aerodrome fees collected: ${collectFeesTxHash}`);
+    }
+
+    this.lastLpRebalance = Date.now();
+
+    this.logger.log(`Aerodrome LP rebalancing completed successfully:
+      Action: ${action}
+      Liquidity removed and fees collected from token ID: ${position.tokenId}
+      Note: New position creation will be implemented in a future update
     `);
   }
 

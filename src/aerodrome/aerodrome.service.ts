@@ -246,4 +246,134 @@ export class AerodromeLpService {
       accruedFees1: 0n
     };
   }
+
+  /**
+   * Remove liquidity from an Aerodrome position
+   */
+  async removeLiquidity(params: {
+    tokenId: string;
+    liquidity: string;
+    amount0Min: number;
+    amount1Min: number;
+    deadline: number;
+  }): Promise<string> {
+    try {
+      this.logger.log(`Removing liquidity from Aerodrome position ${params.tokenId}...`);
+
+      const positionManagerContract = new ethers.Contract(
+        this.config.contracts.positionManager,
+        [
+          'function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline)) external returns (uint256 amount0, uint256 amount1)'
+        ],
+        this.signer
+      );
+
+      const tx = await positionManagerContract.decreaseLiquidity({
+        tokenId: params.tokenId,
+        liquidity: params.liquidity,
+        amount0Min: params.amount0Min,
+        amount1Min: params.amount1Min,
+        deadline: params.deadline,
+      });
+
+      await tx.wait();
+      this.logger.log(`Liquidity removed successfully. Transaction: ${tx.hash}`);
+      return tx.hash;
+    } catch (error: any) {
+      this.logger.error(`Failed to remove liquidity: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Collect fees from an Aerodrome position
+   */
+  async collectFees(params: {
+    tokenId: string;
+    recipient: string;
+    amount0Max: bigint;
+    amount1Max: bigint;
+  }): Promise<string> {
+    try {
+      this.logger.log(`Collecting fees from Aerodrome position ${params.tokenId}...`);
+
+      const positionManagerContract = new ethers.Contract(
+        this.config.contracts.positionManager,
+        [
+          'function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max)) external returns (uint256 amount0, uint256 amount1)'
+        ],
+        this.signer
+      );
+
+      const tx = await positionManagerContract.collect({
+        tokenId: params.tokenId,
+        recipient: params.recipient,
+        amount0Max: params.amount0Max,
+        amount1Max: params.amount1Max,
+      });
+
+      await tx.wait();
+      this.logger.log(`Fees collected successfully. Transaction: ${tx.hash}`);
+      return tx.hash;
+    } catch (error: any) {
+      this.logger.error(`Failed to collect fees: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if an Aerodrome position is out of range
+   */
+  async isPositionOutOfRange(
+    position: AerodromeLiquidityPosition
+  ): Promise<{
+    isOutOfRange: boolean;
+    currentTick: number;
+    tickLower: number;
+    tickUpper: number;
+  }> {
+    try {
+      const userPosition = await getUserPosition(
+        position.userAddress,
+        position.poolAddress,
+        this.config.contracts.positionManager,
+        this.provider,
+        this.configService.get('aerodrome').gaugeAddress,
+      );
+
+      if (!userPosition) {
+        throw new Error('Could not fetch position details');
+      }
+
+      const poolContract = new ethers.Contract(
+        position.poolAddress,
+        ['function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)'],
+        this.provider
+      );
+
+      const slot0 = await poolContract.slot0();
+      const currentTick = Number(slot0.tick);
+
+      const tickLower = Number(userPosition.position.tickLower);
+      const tickUpper = Number(userPosition.position.tickUpper);
+
+      const isOutOfRange = currentTick < tickLower || currentTick > tickUpper;
+
+      this.logger.log(`Position range check:
+        Current tick: ${currentTick}
+        Position range: ${tickLower} to ${tickUpper}
+        Out of range: ${isOutOfRange}
+      `);
+
+      return {
+        isOutOfRange,
+        currentTick,
+        tickLower,
+        tickUpper,
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to check position range: ${error.message}`);
+      throw error;
+    }
+  }
 }

@@ -43,7 +43,7 @@ describe('AerodromeLpService Integration Tests', () => {
 
     console.log('Position result:', position);
     expect(position).toBeDefined();
-  });
+  }, 15000);
 
   it('should get all positions by owner', async () => {
     const userAddress = process.env.WALLET_ADDRESS;
@@ -53,5 +53,26 @@ describe('AerodromeLpService Integration Tests', () => {
     console.log(`Positions owned by ${userAddress}:`, positions);
     expect(positions).toBeDefined();
     expect(Array.isArray(positions)).toBe(true);
-  });
+  }, 15000);
+
+  it('should check if position is out of range', async () => {
+    const userAddress = process.env.WALLET_ADDRESS;
+    const poolAddress = POOL_ADDRESS;
+
+    const position = await service.getPosition(userAddress, poolAddress);
+    
+    if (position) {
+      const rangeCheck = await service.isPositionOutOfRange(position);
+      
+      console.log('Position range check:', rangeCheck);
+      expect(rangeCheck).toBeDefined();
+      expect(rangeCheck.isOutOfRange).toBeDefined();
+      expect(rangeCheck.currentTick).toBeDefined();
+      expect(rangeCheck.tickLower).toBeLessThan(rangeCheck.tickUpper);
+      expect(typeof rangeCheck.currentTick).toBe('number');
+      
+      const expectedOutOfRange = rangeCheck.currentTick < rangeCheck.tickLower || rangeCheck.currentTick > rangeCheck.tickUpper;
+      expect(rangeCheck.isOutOfRange).toBe(expectedOutOfRange);
+    }
+  }, 15000);
 });
